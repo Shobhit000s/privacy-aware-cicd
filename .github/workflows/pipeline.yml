@@ -20,16 +20,18 @@ jobs:
   secret-scan:
     name: "1. Gitleaks Secret Scan"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        with:
-          config-path: gitleaks/.gitleaks.toml
+        uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: gitleaks/.gitleaks.toml
       - name: Upload SARIF
         if: always()
         uses: github/codeql-action/upload-sarif@v3
@@ -39,7 +41,7 @@ jobs:
       - name: Run custom privacy scanner (PII/Aadhaar/PAN/JWT/certs)
         run: |
           python3 scanner/privacy_scanner.py --path . --format json \
-            --out privacy-scan-report.json --fail-on HIGH
+            --out privacy-scan-report.json --fail-on HIGHF
       - name: Upload privacy scan report
         if: always()
         uses: actions/upload-artifact@v4
