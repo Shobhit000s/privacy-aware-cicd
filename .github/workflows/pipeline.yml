@@ -5,7 +5,10 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
-
+permissions:
+  contents: read
+  actions: read
+  security-events: write
 env:
   VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
   REGISTRY: ${{ secrets.REGISTRY_URL }}
