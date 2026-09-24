@@ -60,7 +60,7 @@ vault write database/config/privacy-cicd-postgres \
     connection_url="postgresql://{{username}}:{{password}}@postgres:5432/privacy_cicd?sslmode=disable" \
     allowed_roles="backend-dynamic" \
     username="vault_admin" \
-    password="CHANGE_ME_ADMIN_PASSWORD"
+    password="${VAULT_ADMIN_PASSWORD:?VAULT_ADMIN_PASSWORD must be set}"
 
 vault write database/roles/backend-dynamic \
     db_name=privacy-cicd-postgres \
@@ -76,7 +76,7 @@ vault kv put secret/prod/backend \
 
 vault kv put secret/prod/postgres \
     username="app_user" \
-    password="CHANGE_ME" \
+    password="${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}" \
     dbname="privacy_cicd"
 
 vault kv put secret/ci \
