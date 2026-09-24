@@ -1,0 +1,17 @@
+# trivy/trivy.yaml — shared Trivy config used both locally and in CI
+# Usage: trivy image --config trivy/trivy.yaml <image>
+
+format: sarif
+output: trivy-report.sarif
+exit-code: 1
+severity:
+  - CRITICAL
+  - HIGH
+ignore-unfixed: true       # don't fail the build on CVEs with no available fix yet
+ignorefile: trivy/.trivyignore
+timeout: 5m
+scan:
+  security-checks:
+    - vuln
+    - secret
+    - config

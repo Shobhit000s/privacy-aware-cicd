@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1>ML Privacy Risk Predictor</h1>
+  <p class="muted">Enter deployment feature values to see the trained model's predicted risk score and explanation. In CI this is populated automatically from the diff — see <code>ml/risk_predictor/features.py</code>.</p>
+
+  <div class="grid cols-2" style="align-items: start; margin-top: 20px;">
+    <form method="post" class="card">
+      {% for name in feature_names %}
+        <label for="{{ name }}">{{ name.replace('_', ' ') }}</label>
+        <input type="number" step="any" id="{{ name }}" name="{{ name }}"
+               value="{{ features_used[name] if features_used else 0 }}">
+      {% endfor %}
+      <button type="submit">Predict Risk</button>
+    </form>
+
+    <div>
+      {% if result %}
+        {% if result.error %}
+          <div class="card"><p style="color: var(--red);">{{ result.error }}</p>
+          <p class="muted">Run <code>python ml/risk_predictor/train_model.py</code> first.</p></div>
+        {% else %}
+          <div class="card" style="margin-bottom: 20px;">
+            <h3>Predicted Risk</h3>
+            <div class="metric {{ 'green' if result.risk_score < 30 else 'orange' if result.risk_score < 70 else 'red' }}">
+              {{ result.risk_score }}/100
+            </div>
+            <span class="badge {{ result.risk_level }}">{{ result.risk_level }}</span>
+            <p class="muted" style="margin-top: 12px;">{{ result.recommendation }}</p>
+          </div>
+          <div class="card">
+            <h3>Top Contributing Factors</h3>
+            {% for f in result.top_factors %}
+              <div style="margin-bottom: 10px;">
+                <div style="display:flex; justify-content:space-between; font-size: 13px;">
+                  <span>{{ f.label }}</span><span class="muted">{{ f.value | round(2) }}</span>
+                </div>
+                <div class="factor-bar"><div class="factor-bar-fill" style="width: {{ (f.contribution * 400) | round(0) }}%;"></div></div>
+              </div>
+            {% endfor %}
+          </div>
+        {% endif %}
+      {% else %}
+        <div class="card">
+          <p class="muted">Submit the form to see a prediction. Try setting <code>secret_like_env_vars</code>,
+          <code>pii_fields_unencrypted</code> high and <code>has_audit_logging</code>, <code>reviewer_count</code>
+          low to see a HIGH/CRITICAL score.</p>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}

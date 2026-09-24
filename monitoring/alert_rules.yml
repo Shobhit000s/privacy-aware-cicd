@@ -1,0 +1,27 @@
+groups:
+  - name: privacy-cicd-alerts
+    rules:
+      - alert: HighPrivacyRiskDeployment
+        expr: pipeline_risk_score >= 70
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Deployment with high ML-predicted privacy risk"
+          description: "pipeline_risk_score is {{ $value }} (threshold 70). Check the compliance dashboard for details."
+
+      - alert: LowSecurityScore
+        expr: pipeline_security_score < 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Overall security score has dropped below 50"
+
+      - alert: PipelineRunFailed
+        expr: pipeline_run_status == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A pipeline run reported non-success status"

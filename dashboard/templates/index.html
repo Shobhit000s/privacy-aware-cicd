@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+  <h1>Privacy Compliance Dashboard</h1>
+  <p class="muted">Live security posture derived from the hash-chained audit log. {{ total_runs }} pipeline run(s) recorded.</p>
+
+  <div class="grid cols-3" style="margin: 24px 0;">
+    <div class="card">
+      <h3>Security Score</h3>
+      <div class="metric {{ 'green' if latest_score >= 80 else 'orange' if latest_score >= 50 else 'red' }}">{{ latest_score }}/100</div>
+      <div class="muted">Most recent run</div>
+    </div>
+    <div class="card">
+      <h3>Avg. Privacy Risk (ML)</h3>
+      <div class="metric {{ 'green' if avg_risk < 30 else 'orange' if avg_risk < 70 else 'red' }}">{{ avg_risk }}/100</div>
+      <div class="muted">Across recorded runs</div>
+    </div>
+    <div class="card">
+      <h3>Audit Chain Integrity</h3>
+      <div class="metric green">✓ Verified</div>
+      <div class="muted">Hash-chained, tamper-evident</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Recent Pipeline Runs</h3>
+    <table>
+      <thead>
+        <tr><th>Time</th><th>Run</th><th>Commit</th><th>Actor</th><th>Risk Score</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        {% for e in events %}
+        <tr>
+          <td>{{ e.timestamp[:19].replace('T', ' ') }}</td>
+          <td>{{ e.run_id }}</td>
+          <td><code>{{ e.commit[:8] }}</code></td>
+          <td>{{ e.actor }}</td>
+          <td>{{ e.risk_score if e.risk_score is not none else '—' }}</td>
+          <td><span class="badge {{ 'success' if e.status == 'success' else 'fail' }}">{{ e.status }}</span></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="muted">No runs recorded yet. Try: <code>python scripts/audit_logger.py --demo</code></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

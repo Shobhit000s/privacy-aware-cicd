@@ -1,0 +1,137 @@
+// jenkins/Jenkinsfile
+//
+// Mirrors .github/workflows/pipeline.yml stage-for-stage. Every stage below
+// calls the exact same script/CLI invocation as the GitHub Actions version —
+// see docs/ARCHITECTURE.md section 4 for why that portability was a design
+// goal, not an afterthought.
+pipeline {
+    agent any
+
+    environment {
+        REGISTRY        = credentials('registry-url')
+        VAULT_ADDR      = credentials('vault-addr')
+        RISK_THRESHOLD  = '70'
+        IMAGE_BACKEND   = "privacy-cicd-backend"
+        IMAGE_FRONTEND  = "privacy-cicd-frontend"
+    }
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+    stages {
+
+        stage('1. Gitleaks Secret Scan') {
+            steps {
+                sh '''
+                    gitleaks detect --source . --config gitleaks/.gitleaks.toml \
+                        --report-format sarif --report-path gitleaks-report.sarif
+                '''
+            }
+            post {
+                always { archiveArtifacts artifacts: 'gitleaks-report.sarif', allowEmptyArchive: true }
+            }
+        }
+
+        stage('1b. Custom Privacy Scanner') {
+            steps {
+                sh '''
+                    python3 scanner/privacy_scanner.py --path . --format json \
+                        --out privacy-scan-report.json --fail-on HIGH
+                '''
+            }
+            post {
+                always { archiveArtifacts artifacts: 'privacy-scan-report.json', allowEmptyArchive: true }
+            }
+        }
+
+        stage('2. Trivy Vulnerability Scan') {
+            steps {
+                sh '''
+                    docker build -t ${IMAGE_BACKEND}:${GIT_COMMIT} -f backend/Dockerfile backend/
+                    docker build -t ${IMAGE_FRONTEND}:${GIT_COMMIT} -f app/frontend/Dockerfile app/frontend/
+                    trivy image --config trivy/trivy.yaml ${IMAGE_BACKEND}:${GIT_COMMIT}
+                    trivy image --config trivy/trivy.yaml ${IMAGE_FRONTEND}:${GIT_COMMIT}
+                '''
+            }
+            post {
+                always { archiveArtifacts artifacts: 'trivy-report.sarif', allowEmptyArchive: true }
+            }
+        }
+
+        stage('3. OPA Policy Gate') {
+            steps {
+                sh '''
+                    python3 scripts/build_opa_input.py --out /tmp/input.json
+                    opa eval --input /tmp/input.json \
+                        --data policies/opa/privacy_policy.rego \
+                        --data policies/opa/deployment_policy.rego \
+                        "data.privacy.deny" --format pretty --fail-defined
+                '''
+            }
+        }
+
+        stage('4. ML Privacy Risk Prediction') {
+            steps {
+                sh '''
+                    python3 -m venv /tmp/venv && . /tmp/venv/bin/activate
+                    pip install -q -r requirements.txt
+                    python3 ml/risk_predictor/features.py --diff-base origin/main --out /tmp/features.json
+                    SCORE=$(python3 ml/risk_predictor/predict_risk.py --features /tmp/features.json --json \
+                        | python3 -c "import sys,json;print(json.load(sys.stdin)['risk_score'])")
+                    echo "Predicted privacy risk score: $SCORE / 100"
+                    python3 -c "import sys; sys.exit(1 if float('$SCORE') >= ${RISK_THRESHOLD} else 0)"
+                '''
+            }
+        }
+
+        stage('5. Vault Secret Rotation') {
+            when { branch 'main' }
+            steps {
+                withCredentials([string(credentialsId: 'vault-ci-token', variable: 'VAULT_TOKEN')]) {
+                    sh '''
+                        python3 scripts/secret_rotation.py --diff-base origin/main \
+                            --vault-addr "$VAULT_ADDR" --vault-token "$VAULT_TOKEN"
+                    '''
+                }
+            }
+        }
+
+        stage('6. Deploy to Kubernetes') {
+            when { branch 'main' }
+            steps {
+                withKubeConfig([credentialsId: 'k8s-ci-kubeconfig']) {
+                    sh '''
+                        docker push ${REGISTRY}/${IMAGE_BACKEND}:${GIT_COMMIT}
+                        docker push ${REGISTRY}/${IMAGE_FRONTEND}:${GIT_COMMIT}
+                        sed -i "s#__BACKEND_IMAGE__#${REGISTRY}/${IMAGE_BACKEND}:${GIT_COMMIT}#g" k8s/base/backend-deployment.yaml
+                        sed -i "s#__FRONTEND_IMAGE__#${REGISTRY}/${IMAGE_FRONTEND}:${GIT_COMMIT}#g" k8s/base/frontend-deployment.yaml
+                        kubectl apply -k k8s/base/
+                    '''
+                }
+            }
+        }
+
+        stage('7. Audit Log + Compliance Dashboard') {
+            steps {
+                sh '''
+                    python3 scripts/audit_logger.py \
+                        --run-id "${BUILD_NUMBER}" \
+                        --commit "${GIT_COMMIT}" \
+                        --actor "${BUILD_USER_ID:-jenkins}" \
+                        --status "${currentBuild.currentResult ?: 'success'}"
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            junit testResults: 'test-results/*.xml', allowEmptyResults: true
+        }
+        failure {
+            echo "Pipeline failed — see stage logs above. Audit event still recorded for the failed run."
+        }
+    }
+}

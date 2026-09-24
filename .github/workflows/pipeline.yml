@@ -1,0 +1,219 @@
+name: Privacy-Aware CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+  REGISTRY: ${{ secrets.REGISTRY_URL }}
+  IMAGE_BACKEND: privacy-cicd-backend
+  IMAGE_FRONTEND: privacy-cicd-frontend
+  RISK_THRESHOLD: "70"   # 0-100 scale; build fails if predicted risk >= threshold
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Stage 1: Secret detection (pre-deploy gate; pre-commit hook covers local)
+  # ---------------------------------------------------------------------
+  secret-scan:
+    name: "1. Gitleaks Secret Scan"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          config-path: gitleaks/.gitleaks.toml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+          category: gitleaks
+      - name: Run custom privacy scanner (PII/Aadhaar/PAN/JWT/certs)
+        run: |
+          python3 scanner/privacy_scanner.py --path . --format json \
+            --out privacy-scan-report.json --fail-on HIGH
+      - name: Upload privacy scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: privacy-scan-report
+          path: privacy-scan-report.json
+
+  # ---------------------------------------------------------------------
+  # Stage 2: Container / dependency vulnerability scan
+  # ---------------------------------------------------------------------
+  vuln-scan:
+    name: "2. Trivy Vulnerability Scan"
+    runs-on: ubuntu-latest
+    needs: secret-scan
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build backend image
+        run: docker build -t ${{ env.IMAGE_BACKEND }}:${{ github.sha }} -f backend/Dockerfile backend/
+      - name: Build frontend image
+        run: docker build -t ${{ env.IMAGE_FRONTEND }}:${{ github.sha }} -f app/frontend/Dockerfile app/frontend/
+      - name: Trivy scan — backend (fail on CRITICAL/HIGH)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: "${{ env.IMAGE_BACKEND }}:${{ github.sha }}"
+          severity: "CRITICAL,HIGH"
+          exit-code: "1"
+          ignore-unfixed: true
+          format: "sarif"
+          output: "trivy-backend.sarif"
+      - name: Trivy scan — frontend (fail on CRITICAL/HIGH)
+        if: always()
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: "${{ env.IMAGE_FRONTEND }}:${{ github.sha }}"
+          severity: "CRITICAL,HIGH"
+          exit-code: "1"
+          ignore-unfixed: true
+          format: "sarif"
+          output: "trivy-frontend.sarif"
+      - name: Upload Trivy SARIF (backend)
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: "trivy-backend.sarif"
+          category: trivy-backend
+      - name: Upload Trivy SARIF (frontend)
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: "trivy-frontend.sarif"
+          category: trivy-frontend
+      - name: Archive raw Trivy reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-reports
+          path: trivy-*.sarif
+
+  # ---------------------------------------------------------------------
+  # Stage 3: Policy-as-code check (OPA)
+  # ---------------------------------------------------------------------
+  policy-check:
+    name: "3. OPA Policy Gate"
+    runs-on: ubuntu-latest
+    needs: vuln-scan
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install OPA
+        run: |
+          curl -L -o opa https://openpolicyagent.org/downloads/v0.65.0/opa_linux_amd64_static
+          chmod +x opa && sudo mv opa /usr/local/bin/
+      - name: Build deployment input document
+        run: python scripts/build_opa_input.py --out /tmp/input.json
+      - name: Evaluate privacy policy
+        run: |
+          opa eval --input /tmp/input.json \
+            --data policies/opa/privacy_policy.rego \
+            --data policies/opa/deployment_policy.rego \
+            "data.privacy.deny" --format pretty --fail-defined
+
+  # ---------------------------------------------------------------------
+  # Stage 4: ML privacy-risk prediction (research novelty)
+  # ---------------------------------------------------------------------
+  risk-prediction:
+    name: "4. ML Privacy Risk Prediction"
+    runs-on: ubuntu-latest
+    needs: policy-check
+    outputs:
+      risk_score: ${{ steps.predict.outputs.risk_score }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Extract deployment features
+        run: python ml/risk_predictor/features.py --diff-base origin/main --out /tmp/features.json
+      - name: Predict risk score
+        id: predict
+        run: |
+          SCORE=$(python ml/risk_predictor/predict_risk.py --features /tmp/features.json --json | python -c "import sys,json;print(json.load(sys.stdin)['risk_score'])")
+          echo "risk_score=$SCORE" >> "$GITHUB_OUTPUT"
+          echo "Predicted privacy risk score: $SCORE / 100"
+          python -c "import sys; s=float('$SCORE'); sys.exit(1 if s >= ${{ env.RISK_THRESHOLD }} else 0)"
+
+  # ---------------------------------------------------------------------
+  # Stage 5: Secret rotation for anything touched in this deploy
+  # ---------------------------------------------------------------------
+  secret-rotation:
+    name: "5. Vault Secret Rotation"
+    runs-on: ubuntu-latest
+    needs: risk-prediction
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Authenticate to Vault (OIDC/JWT, no static creds)
+        uses: hashicorp/vault-action@v3
+        with:
+          url: ${{ secrets.VAULT_ADDR }}
+          method: jwt
+          role: github-actions-ci
+          secrets: |
+            secret/data/ci ci_role_id | CI_ROLE_ID
+      - name: Rotate touched secrets
+        run: python scripts/secret_rotation.py --diff-base origin/main --vault-addr "$VAULT_ADDR"
+
+  # ---------------------------------------------------------------------
+  # Stage 6: Deploy (only if everything above passed)
+  # ---------------------------------------------------------------------
+  deploy:
+    name: "6. Deploy to Kubernetes"
+    runs-on: ubuntu-latest
+    needs: secret-rotation
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build & push images
+        run: |
+          docker build -t $REGISTRY/$IMAGE_BACKEND:${{ github.sha }} -f backend/Dockerfile backend/
+          docker build -t $REGISTRY/$IMAGE_FRONTEND:${{ github.sha }} -f app/frontend/Dockerfile app/frontend/
+          docker push $REGISTRY/$IMAGE_BACKEND:${{ github.sha }}
+          docker push $REGISTRY/$IMAGE_FRONTEND:${{ github.sha }}
+      - name: Apply K8s manifests (kustomize)
+        run: |
+          sed -i "s#__BACKEND_IMAGE__#$REGISTRY/$IMAGE_BACKEND:${{ github.sha }}#g" k8s/base/backend-deployment.yaml
+          sed -i "s#__FRONTEND_IMAGE__#$REGISTRY/$IMAGE_FRONTEND:${{ github.sha }}#g" k8s/base/frontend-deployment.yaml
+          kubectl apply -k k8s/base/
+          kubectl rollout status deployment/backend -n production --timeout=120s
+          kubectl rollout status deployment/frontend -n production --timeout=120s
+
+  # ---------------------------------------------------------------------
+  # Stage 7: Audit + compliance dashboard update (always runs)
+  # ---------------------------------------------------------------------
+  audit:
+    name: "7. Audit Log + Compliance Dashboard"
+    runs-on: ubuntu-latest
+    needs: [secret-scan, vuln-scan, policy-check, risk-prediction]
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Write audit event
+        run: |
+          python scripts/audit_logger.py \
+            --run-id "${{ github.run_id }}" \
+            --commit "${{ github.sha }}" \
+            --actor "${{ github.actor }}" \
+            --risk-score "${{ needs.risk-prediction.outputs.risk_score }}" \
+            --status "${{ job.status }}" \
+            --push-metrics "${{ secrets.PROMETHEUS_PUSHGATEWAY }}"

@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: production
+data:
+  CORS_ORIGINS: "https://app.example.com"
+  JWT_EXPIRE_MINUTES: "60"
+  RISK_THRESHOLD: "70"
+  LOG_LEVEL: "info"

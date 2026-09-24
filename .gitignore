@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+audit_log.jsonl
+*.log
+.env
+*.db
+node_modules/
+dist/
+ml/risk_predictor/data/synthetic_training_data.csv

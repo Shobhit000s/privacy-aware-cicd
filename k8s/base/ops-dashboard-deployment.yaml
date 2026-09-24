@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ops-dashboard
+  namespace: production
+  labels:
+    app: ops-dashboard
+    security-tier: restricted
+  annotations:
+    vault.hashicorp.com/agent-inject: "true"
+    vault.hashicorp.com/role: "ops-dashboard"
+    vault.hashicorp.com/agent-inject-secret-db-creds: "secret/data/prod/db"
+    vault.hashicorp.com/agent-inject-template-db-creds: |
+      {{- with secret "secret/data/prod/db" -}}
+      export DB_USER="{{ .Data.data.username }}"
+      export DB_PASS="{{ .Data.data.password }}"
+      {{- end -}}
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ops-dashboard
+  template:
+    metadata:
+      labels:
+        app: ops-dashboard
+    spec:
+      serviceAccountName: ops-dashboard-sa
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: app
+          image: __IMAGE__
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5000
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          envFrom:
+            - secretRef:
+                name: app-runtime-config
+                optional: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 5000
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 5000
+            initialDelaySeconds: 15
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ops-dashboard
+  namespace: production
+spec:
+  selector:
+    app: ops-dashboard
+  ports:
+    - port: 80
+      targetPort: 5000
+  type: ClusterIP

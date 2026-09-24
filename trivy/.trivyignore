@@ -1,0 +1,9 @@
+# trivy/.trivyignore
+# Every entry here MUST have a comment explaining why it's accepted, an owner,
+# and a review-by date. Unreviewed/expired entries should be removed — this
+# file is itself reviewed as part of the quarterly security audit.
+#
+# Format: CVE-ID  # reason | owner | review-by YYYY-MM-DD
+#
+# Example (remove once a real exception is needed):
+# CVE-2023-00000  # No fix available upstream yet, low exploitability in our context | security-team | 2026-12-31

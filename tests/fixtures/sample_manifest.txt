@@ -1,0 +1,7 @@
+env:
+  - name: DB_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: db-creds
+# vault path reference for CI:
+# vault: role=app path=secret/data/prod/api_token

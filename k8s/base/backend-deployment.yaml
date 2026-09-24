@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: production
+  labels:
+    app: backend
+    security-tier: restricted
+  annotations:
+    vault.hashicorp.com/agent-inject: "true"
+    vault.hashicorp.com/role: "privacy-aware-app"
+    vault.hashicorp.com/agent-inject-secret-backend-creds: "secret/data/prod/backend"
+    vault.hashicorp.com/agent-inject-template-backend-creds: |
+      {{- with secret "secret/data/prod/backend" -}}
+      export DATABASE_URL="{{ .Data.data.database_url }}"
+      export JWT_SECRET_KEY="{{ .Data.data.jwt_secret_key }}"
+      {{- end -}}
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      serviceAccountName: privacy-aware-app-sa
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: backend
+          image: __BACKEND_IMAGE__
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: "150m", memory: "192Mi" }
+            limits: { cpu: "750m", memory: "384Mi" }
+          envFrom:
+            - configMapRef:
+                name: backend-config
+            - secretRef:
+                name: app-runtime-config
+                optional: true
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 15
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: production
+spec:
+  selector:
+    app: backend
+  ports:
+    - port: 8000
+      targetPort: 8000
+  type: ClusterIP

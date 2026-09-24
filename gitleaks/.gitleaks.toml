@@ -1,0 +1,70 @@
+title = "privacy-aware-cicd gitleaks config"
+
+[extend]
+useDefault = true   # inherit the standard gitleaks ruleset (AWS keys, GitHub tokens, etc.)
+
+# --- Custom rules on top of the default set -------------------------------
+
+[[rules]]
+id = "generic-db-connection-string"
+description = "Database connection string with embedded credentials"
+regex = '''(?i)(postgres|mysql|mongodb(\+srv)?):\/\/[^:\s]+:[^@\s]+@[^\s'"]+'''
+tags = ["credentials", "database"]
+
+[[rules]]
+id = "generic-ssh-private-key"
+description = "SSH/PGP private key block"
+regex = '''-----BEGIN ((EC|RSA|DSA|OPENSSH|PGP) )?PRIVATE KEY( BLOCK)?-----'''
+tags = ["key", "ssh"]
+
+[[rules]]
+id = "generic-api-key-assignment"
+description = "Generic API key style assignment"
+regex = '''(?i)(?:api[_-]?key|apikey|secret[_-]?key)\s*[:=]\s*['"]([A-Za-z0-9_\-]{16,})['"]'''
+secretGroup = 1
+tags = ["credentials", "api-key"]
+
+[[rules]]
+id = "jwt-token"
+description = "JSON Web Token"
+regex = '''eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+'''
+tags = ["token", "jwt"]
+
+[[rules]]
+id = "pii-email-bulk"
+description = "Hardcoded list of email addresses (possible test/PII data committed)"
+regex = '''([\w.+-]+@[\w-]+\.[\w.-]+[,\s]+){3,}'''
+tags = ["pii", "email"]
+
+[[rules]]
+id = "pii-ssn-us"
+description = "US Social Security Number pattern"
+regex = '''\b\d{3}-\d{2}-\d{4}\b'''
+tags = ["pii", "ssn"]
+
+[[rules]]
+id = "pii-credit-card"
+description = "Credit card number pattern (Luhn-shaped, 13-19 digits)"
+regex = '''\b(?:\d[ -]*?){13,19}\b'''
+tags = ["pii", "financial"]
+
+# --- Allowlist: paths/patterns we intentionally ignore ---------------------
+# NOTE: every entry below was added in response to an actual `gitleaks detect`
+# run against this repository (not written speculatively). See
+# docs/ARCHITECTURE.md for the verification log.
+
+[allowlist]
+description = "Ignore fixtures, test data, lockfiles, and documented non-secret placeholders"
+paths = [
+  '''(.*)?test(s)?/fixtures/.*''',
+  '''(.*)?\.lock$''',
+  '''(.*)?package-lock\.json''',
+  '''(.*)?ml/risk_predictor/data/synthetic_.*\.csv''',  # synthetic, non-real training data
+]
+regexes = [
+  '''EXAMPLE_KEY_DO_NOT_USE''',
+  '''dev-only-change-me''',                    # documented local-dev-only placeholder (docker-compose.yml)
+  '''REPLACE_ME_INJECTED_BY_VAULT''',           # documented K8s Secret template placeholder (k8s/base/secret.yaml)
+  '''key: prod/(backend|postgres)''',           # Vault KV *path* references in ExternalSecret manifests, not secret values
+  '''eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U''',  # scanner/privacy_scanner.py demo fixture JWT, used to test the scanner's own JWT detector
+]
