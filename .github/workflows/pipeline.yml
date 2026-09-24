@@ -62,7 +62,6 @@ jobs:
           name: privacy-scan-report
           path: privacy-scan-report.json
 
-
   # ---------------------------------------------------------------------
   # Stage 2: Container / dependency vulnerability scan
   # ---------------------------------------------------------------------
@@ -86,7 +85,6 @@ jobs:
             -t ${{ env.IMAGE_FRONTEND }}:${{ github.sha }} \
             -f app/frontend/Dockerfile app/frontend/
 
-
       # -----------------------------------------------------------------
       # Diagnostic backend scan
       # Shows HIGH/CRITICAL vulnerabilities in normal table format.
@@ -101,7 +99,6 @@ jobs:
           ignore-unfixed: true
           format: "table"
 
-
       # -----------------------------------------------------------------
       # Actual backend security gate
       # Generates SARIF and fails on HIGH/CRITICAL.
@@ -114,9 +111,8 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           format: "sarif"
-          limit-severities-for-sarif: true		
+          limit-severities-for-sarif: true
           output: "trivy-backend.sarif"
-
 
       # -----------------------------------------------------------------
       # Diagnostic frontend scan
@@ -133,7 +129,6 @@ jobs:
           ignore-unfixed: true
           format: "table"
 
-
       # -----------------------------------------------------------------
       # Actual frontend security gate
       # Generates SARIF and fails on HIGH/CRITICAL.
@@ -147,9 +142,8 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           format: "sarif"
-	  limit-severities-for-sarif: true
+          limit-severities-for-sarif: true
           output: "trivy-frontend.sarif"
-
 
       # -----------------------------------------------------------------
       # Upload SARIF results
@@ -168,7 +162,6 @@ jobs:
           sarif_file: "trivy-frontend.sarif"
           category: trivy-frontend
 
-
       # -----------------------------------------------------------------
       # Archive raw Trivy reports
       # -----------------------------------------------------------------
@@ -178,7 +171,6 @@ jobs:
         with:
           name: trivy-reports
           path: trivy-*.sarif
-
 
   # ---------------------------------------------------------------------
   # Stage 3: Policy-as-code check
@@ -211,7 +203,6 @@ jobs:
             "data.privacy.deny" \
             --format pretty \
             --fail-defined
-
 
   # ---------------------------------------------------------------------
   # Stage 4: ML privacy-risk prediction
@@ -256,7 +247,6 @@ jobs:
           python -c \
             "import sys; s=float('$SCORE'); sys.exit(1 if s >= ${{ env.RISK_THRESHOLD }} else 0)"
 
-
   # ---------------------------------------------------------------------
   # Stage 5: Secret rotation
   # ---------------------------------------------------------------------
@@ -292,7 +282,6 @@ jobs:
           python scripts/secret_rotation.py \
             --diff-base origin/main \
             --vault-addr "$VAULT_ADDR"
-
 
   # ---------------------------------------------------------------------
   # Stage 6: Deploy
@@ -339,7 +328,6 @@ jobs:
           kubectl rollout status deployment/frontend \
             -n production \
             --timeout=120s
-
 
   # ---------------------------------------------------------------------
   # Stage 7: Audit + compliance dashboard
