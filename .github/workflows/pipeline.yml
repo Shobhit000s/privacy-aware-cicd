@@ -41,7 +41,7 @@ jobs:
       - name: Run custom privacy scanner (PII/Aadhaar/PAN/JWT/certs)
         run: |
           python3 scanner/privacy_scanner.py --path . --format json \
-            --out privacy-scan-report.json --fail-on HIGHF
+            --out privacy-scan-report.json --fail-on HIGH
       - name: Upload privacy scan report
         if: always()
         uses: actions/upload-artifact@v4
