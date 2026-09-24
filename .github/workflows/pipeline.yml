@@ -34,7 +34,7 @@ jobs:
           GITLEAKS_CONFIG: gitleaks/.gitleaks.toml
       - name: Upload SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: results.sarif
           category: gitleaks
@@ -63,7 +63,7 @@ jobs:
       - name: Build frontend image
         run: docker build -t ${{ env.IMAGE_FRONTEND }}:${{ github.sha }} -f app/frontend/Dockerfile app/frontend/
       - name: Trivy scan — backend (fail on CRITICAL/HIGH)
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: "${{ env.IMAGE_BACKEND }}:${{ github.sha }}"
           severity: "CRITICAL,HIGH"
@@ -83,13 +83,13 @@ jobs:
           output: "trivy-frontend.sarif"
       - name: Upload Trivy SARIF (backend)
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: "trivy-backend.sarif"
           category: trivy-backend
       - name: Upload Trivy SARIF (frontend)
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: "trivy-frontend.sarif"
           category: trivy-frontend
