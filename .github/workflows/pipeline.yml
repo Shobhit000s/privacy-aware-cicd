@@ -114,6 +114,7 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           format: "sarif"
+          limit-severities-for-sarif: true		
           output: "trivy-backend.sarif"
 
 
@@ -146,6 +147,7 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
           format: "sarif"
+	  limit-severities-for-sarif: true
           output: "trivy-frontend.sarif"
 
 
