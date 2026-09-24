@@ -73,7 +73,7 @@ jobs:
           output: "trivy-backend.sarif"
       - name: Trivy scan — frontend (fail on CRITICAL/HIGH)
         if: always()
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: "${{ env.IMAGE_FRONTEND }}:${{ github.sha }}"
           severity: "CRITICAL,HIGH"
