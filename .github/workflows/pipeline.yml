@@ -1,4 +1,4 @@
-=name: Privacy-Aware CI/CD Pipeline
+name: Privacy-Aware CI/CD Pipeline
 
 on:
   push:
@@ -1184,4 +1184,3 @@ jobs:
             --risk-score "$RISK_SCORE" \
             --status "$PIPELINE_STATUS" \
             --push-metrics "${{ secrets.PROMETHEUS_PUSHGATEWAY }}"
-
