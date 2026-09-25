@@ -180,12 +180,68 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install OPA
+        shell: bash
         run: |
-          curl -L -o opa \
-            https://openpolicyagent.org/downloads/v0.65.0/opa_linux_amd64_static
-          chmod +x opa
-          sudo mv opa /usr/local/bin/
+          set -euo pipefail
 
+          OPA_VERSION="1.21.0"
+          OPA_GITHUB_URL="https://github.com/open-policy-agent/opa/releases/download/v${OPA_VERSION}/opa_linux_amd64"
+          OPA_OFFICIAL_URL="https://openpolicyagent.org/downloads/v${OPA_VERSION}/opa_linux_amd64"
+
+          echo "Downloading Open Policy Agent v${OPA_VERSION}..."
+
+          rm -f opa
+
+          # Retry the download because GitHub-hosted runners can occasionally
+          # experience transient TLS/network connection resets.
+          for attempt in 1 2 3 4 5; do
+            echo "GitHub download attempt ${attempt}/5"
+
+            if curl \
+              --fail \
+              --show-error \
+              --silent \
+              --location \
+              --retry 5 \
+              --retry-all-errors \
+              --retry-delay 5 \
+              --connect-timeout 30 \
+              --max-time 180 \
+              -A "github-actions-opa-install" \
+              -o opa \
+              "$OPA_GITHUB_URL"; then
+              break
+            fi
+
+            rm -f opa
+
+            if [ "$attempt" -eq 5 ]; then
+              echo "GitHub download failed. Trying the official OPA download endpoint..."
+
+              curl \
+                --fail \
+                --show-error \
+                --silent \
+                --location \
+                --retry 5 \
+                --retry-all-errors \
+                --retry-delay 5 \
+                --connect-timeout 30 \
+                --max-time 180 \
+                -A "github-actions-opa-install" \
+                -o opa \
+                "$OPA_OFFICIAL_URL"
+            else
+              sleep 10
+            fi
+          done
+
+          test -s opa
+          chmod 755 opa
+          sudo mv opa /usr/local/bin/opa
+
+          echo "===== OPA VERSION ====="
+          opa version
       - name: Build deployment input document
         run: |
           python scripts/build_opa_input.py --out /tmp/input.json
