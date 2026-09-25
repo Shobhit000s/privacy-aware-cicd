@@ -6,7 +6,6 @@ namespace: production
 resources:
   - namespace.yaml
   - rbac.yaml
-  - runtime-secret.yaml
   - postgres.yaml
   - backend.yaml
   - frontend.yaml
