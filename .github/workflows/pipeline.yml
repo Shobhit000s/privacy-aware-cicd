@@ -1,4 +1,4 @@
-name: Privacy-Aware CI/CD Pipeline
+=name: Privacy-Aware CI/CD Pipeline
 
 on:
   push:
@@ -689,7 +689,7 @@ jobs:
       # This keeps the container non-root and only adds the capability
       # needed to bind the existing port 80.
       # -----------------------------------------------------------------
-      - name: Configure frontend non-root port binding
+      - name: Configure frontend non-root nginx runtime
         run: |
           kubectl -n production patch deployment frontend \
             --type='strategic' \
@@ -697,16 +697,35 @@ jobs:
           spec:
             template:
               spec:
+                securityContext:
+                  fsGroup: 101
+                  fsGroupChangePolicy: OnRootMismatch
                 containers:
                 - name: frontend
                   securityContext:
+                    runAsNonRoot: true
+                    runAsUser: 101
+                    runAsGroup: 101
                     allowPrivilegeEscalation: false
                     capabilities:
                       add:
                       - NET_BIND_SERVICE
                       drop:
                       - ALL
+                  volumeMounts:
+                  - name: nginx-cache
+                    mountPath: /var/cache/nginx
+                  - name: nginx-tmp
+                    mountPath: /tmp
+                volumes:
+                - name: nginx-cache
+                  emptyDir: {}
+                - name: nginx-tmp
+                  emptyDir: {}
           '
+
+          echo "Frontend nginx writable runtime volumes configured."
+          kubectl -n production get deployment frontend -o yaml |             grep -A12 -B4 "nginx-cache" || true
 
       # -----------------------------------------------------------------
       # Fix PostgreSQL PVC ownership for the CI Kind local-path volume.
@@ -1165,3 +1184,4 @@ jobs:
             --risk-score "$RISK_SCORE" \
             --status "$PIPELINE_STATUS" \
             --push-metrics "${{ secrets.PROMETHEUS_PUSHGATEWAY }}"
+
