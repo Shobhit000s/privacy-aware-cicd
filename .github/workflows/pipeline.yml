@@ -653,8 +653,49 @@ jobs:
           '
 
       # -----------------------------------------------------------------
-      # Restart workloads after CI Secrets and frontend security context
-      # have been configured.
+      # Fix PostgreSQL PVC ownership for the CI Kind local-path volume.
+      #
+      # The PostgreSQL data mount uses subPath=pgdata. The fresh Kind
+      # local-path volume is root-owned, so the postgres UID cannot chmod
+      # the subPath and initdb exits with "Operation not permitted".
+      # An init container prepares that directory as UID/GID 999.
+      # -----------------------------------------------------------------
+      - name: Configure PostgreSQL volume permissions
+        run: |
+          kubectl -n production patch statefulset postgres             --type='strategic'             -p='
+          spec:
+            template:
+              spec:
+                initContainers:
+                - name: postgres-volume-init
+                  image: postgres:16-alpine
+                  command:
+                  - sh
+                  - -c
+                  - |
+                    mkdir -p /var/lib/postgresql/data/pgdata
+                    chown -R 999:999 /var/lib/postgresql/data/pgdata
+                    chmod 700 /var/lib/postgresql/data/pgdata
+                  securityContext:
+                    runAsUser: 0
+                    runAsGroup: 0
+                    runAsNonRoot: false
+                    allowPrivilegeEscalation: false
+                    capabilities:
+                      drop:
+                      - ALL
+                      add:
+                      - CHOWN
+                  volumeMounts:
+                  - name: postgres-storage
+                    mountPath: /var/lib/postgresql/data
+          '
+
+          kubectl -n production rollout status statefulset/postgres             --timeout=30s || true
+
+      # -----------------------------------------------------------------
+      # Restart workloads after CI Secrets, PostgreSQL volume permissions,
+      # and frontend security context have been configured.
       # -----------------------------------------------------------------
       - name: Restart application workloads
         run: |
