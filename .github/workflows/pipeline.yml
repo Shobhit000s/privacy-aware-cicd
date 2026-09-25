@@ -602,18 +602,6 @@ jobs:
           kubectl version --client
 
       # ---------------------------------------------------------------
-      # Create CI runtime secret
-      # ---------------------------------------------------------------
-
-      - name: Create CI runtime secret
-        run: |
-
-          kubectl create secret generic app-runtime-config \
-            -n production \
-            --from-literal=DATABASE_URL="postgresql+psycopg2://app_user:dev-only-password@postgres:5432/privacy_cicd" \
-            --from-literal=JWT_SECRET_KEY="ci-demo-jwt-secret"
-
-      # ---------------------------------------------------------------
       # Apply CI Kubernetes manifests
       # ---------------------------------------------------------------
 
