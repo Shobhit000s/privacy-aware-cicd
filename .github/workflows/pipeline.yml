@@ -10,10 +10,10 @@ permissions:
   contents: read
   actions: read
   security-events: write
+  packages: write
 
 env:
-  VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
-  REGISTRY: ${{ secrets.REGISTRY_URL }}
+  REGISTRY: ghcr.io/shobhit000s
   IMAGE_BACKEND: privacy-cicd-backend
   IMAGE_FRONTEND: privacy-cicd-frontend
   RISK_THRESHOLD: "70"
@@ -98,7 +98,7 @@ jobs:
           format: "table"
 
       # -----------------------------------------------------------------
-      # Actual backend security gate
+      # Backend security gate
       # -----------------------------------------------------------------
       - name: Trivy scan — backend (fail on CRITICAL/HIGH)
         uses: aquasecurity/trivy-action@v0.35.0
@@ -125,7 +125,7 @@ jobs:
           format: "table"
 
       # -----------------------------------------------------------------
-      # Actual frontend security gate
+      # Frontend security gate
       # -----------------------------------------------------------------
       - name: Trivy scan — frontend (fail on CRITICAL/HIGH)
         if: always()
@@ -157,7 +157,7 @@ jobs:
           category: trivy-frontend
 
       # -----------------------------------------------------------------
-      # Archive raw Trivy reports
+      # Archive raw reports
       # -----------------------------------------------------------------
       - name: Archive raw Trivy reports
         if: always()
@@ -243,10 +243,6 @@ jobs:
 
   # ---------------------------------------------------------------------
   # Stage 5: Vault Secret Rotation
-  #
-  # A temporary Vault development server is created inside the GitHub
-  # Actions runner. This avoids requiring the runner to reach the Vault
-  # running on the developer's local machine.
   # ---------------------------------------------------------------------
   secret-rotation:
     name: "5. Vault Secret Rotation"
@@ -279,7 +275,7 @@ jobs:
             hashicorp/vault:1.17
 
       # -----------------------------------------------------------------
-      # Wait until Vault is ready
+      # Wait for Vault
       # -----------------------------------------------------------------
       - name: Wait for Vault
         run: |
@@ -287,6 +283,7 @@ jobs:
             if curl -fsS \
               http://127.0.0.1:8200/v1/sys/health \
               > /dev/null; then
+
               echo "Vault is ready."
               exit 0
             fi
@@ -333,7 +330,7 @@ jobs:
           echo "Vault configuration completed."
 
       # -----------------------------------------------------------------
-      # Verify Vault secrets
+      # Verify Vault
       # -----------------------------------------------------------------
       - name: Verify Vault secrets
         run: |
@@ -352,7 +349,7 @@ jobs:
           echo "Vault secret verification passed."
 
       # -----------------------------------------------------------------
-      # Run project's secret rotation script
+      # Run secret rotation
       # -----------------------------------------------------------------
       - name: Rotate touched secrets
         run: |
@@ -364,7 +361,7 @@ jobs:
             --vault-addr "$VAULT_ADDR"
 
       # -----------------------------------------------------------------
-      # Always clean up temporary Vault
+      # Cleanup Vault
       # -----------------------------------------------------------------
       - name: Stop temporary Vault
         if: always()
@@ -372,7 +369,7 @@ jobs:
           docker rm -f github-vault || true
 
   # ---------------------------------------------------------------------
-  # Stage 6: Deploy
+  # Stage 6: Build, publish and deploy to temporary Kubernetes
   # ---------------------------------------------------------------------
   deploy:
     name: "6. Deploy to Kubernetes"
@@ -381,23 +378,104 @@ jobs:
 
     if: github.ref == 'refs/heads/main'
 
+    permissions:
+      contents: read
+      packages: write
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build & push images
+      # -----------------------------------------------------------------
+      # Login to GitHub Container Registry
+      # -----------------------------------------------------------------
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # -----------------------------------------------------------------
+      # Build backend
+      # -----------------------------------------------------------------
+      - name: Build backend image
         run: |
           docker build \
             -t $REGISTRY/$IMAGE_BACKEND:${{ github.sha }} \
             -f backend/Dockerfile backend/
 
+      # -----------------------------------------------------------------
+      # Build frontend
+      # -----------------------------------------------------------------
+      - name: Build frontend image
+        run: |
           docker build \
             -t $REGISTRY/$IMAGE_FRONTEND:${{ github.sha }} \
             -f app/frontend/Dockerfile app/frontend/
 
-          docker push $REGISTRY/$IMAGE_BACKEND:${{ github.sha }}
-          docker push $REGISTRY/$IMAGE_FRONTEND:${{ github.sha }}
+      # -----------------------------------------------------------------
+      # Push backend to GHCR
+      # -----------------------------------------------------------------
+      - name: Push backend image
+        run: |
+          docker push \
+            $REGISTRY/$IMAGE_BACKEND:${{ github.sha }}
 
-      - name: Apply K8s manifests
+      # -----------------------------------------------------------------
+      # Push frontend to GHCR
+      # -----------------------------------------------------------------
+      - name: Push frontend image
+        run: |
+          docker push \
+            $REGISTRY/$IMAGE_FRONTEND:${{ github.sha }}
+
+      # -----------------------------------------------------------------
+      # Install/create temporary Kubernetes cluster
+      # -----------------------------------------------------------------
+      - name: Create temporary Kubernetes cluster
+        uses: helm/kind-action@v1.14.0
+        with:
+          cluster_name: privacy-cicd
+          wait: 120s
+
+      # -----------------------------------------------------------------
+      # Check Kubernetes cluster
+      # -----------------------------------------------------------------
+      - name: Verify Kubernetes cluster
+        run: |
+          kubectl cluster-info
+          kubectl get nodes
+          kubectl get namespaces
+
+      # -----------------------------------------------------------------
+      # Load locally built images into Kind
+      #
+      # This avoids requiring Kubernetes to authenticate to GHCR.
+      # -----------------------------------------------------------------
+      - name: Load backend image into Kind
+        run: |
+          kind load docker-image \
+            $REGISTRY/$IMAGE_BACKEND:${{ github.sha }} \
+            --name privacy-cicd
+
+      - name: Load frontend image into Kind
+        run: |
+          kind load docker-image \
+            $REGISTRY/$IMAGE_FRONTEND:${{ github.sha }} \
+            --name privacy-cicd
+
+      # -----------------------------------------------------------------
+      # Verify images inside Kind
+      # -----------------------------------------------------------------
+      - name: Verify images
+        run: |
+          docker exec privacy-cicd-control-plane \
+            crictl images | grep privacy-cicd || true
+
+      # -----------------------------------------------------------------
+      # Update Kubernetes manifests with exact image names
+      # -----------------------------------------------------------------
+      - name: Update Kubernetes image references
         run: |
           sed -i \
             "s#__BACKEND_IMAGE__#$REGISTRY/$IMAGE_BACKEND:${{ github.sha }}#g" \
@@ -407,20 +485,98 @@ jobs:
             "s#__FRONTEND_IMAGE__#$REGISTRY/$IMAGE_FRONTEND:${{ github.sha }}#g" \
             k8s/base/frontend-deployment.yaml
 
+      # -----------------------------------------------------------------
+      # Apply Kubernetes manifests
+      # -----------------------------------------------------------------
+      - name: Apply K8s manifests
+        run: |
           kubectl apply -k k8s/base/
 
+      # -----------------------------------------------------------------
+      # Show deployed resources
+      # -----------------------------------------------------------------
+      - name: Show Kubernetes resources
+        if: always()
+        run: |
+          kubectl get namespaces
+          kubectl get pods -A
+          kubectl get deployments -A
+          kubectl get services -A
+
+      # -----------------------------------------------------------------
+      # Wait for backend
+      # -----------------------------------------------------------------
+      - name: Wait for backend rollout
+        run: |
           kubectl rollout status deployment/backend \
             -n production \
-            --timeout=120s
+            --timeout=180s
 
+      # -----------------------------------------------------------------
+      # Wait for frontend
+      # -----------------------------------------------------------------
+      - name: Wait for frontend rollout
+        run: |
           kubectl rollout status deployment/frontend \
             -n production \
-            --timeout=120s
+            --timeout=180s
+
+      # -----------------------------------------------------------------
+      # Final deployment verification
+      # -----------------------------------------------------------------
+      - name: Verify deployment
+        run: |
+          echo "Backend deployment:"
+          kubectl get deployment backend \
+            -n production \
+            -o wide
+
+          echo "Frontend deployment:"
+          kubectl get deployment frontend \
+            -n production \
+            -o wide
+
+          echo "Backend pods:"
+          kubectl get pods \
+            -n production \
+            -l app=backend \
+            -o wide || true
+
+          echo "Frontend pods:"
+          kubectl get pods \
+            -n production \
+            -l app=frontend \
+            -o wide || true
+
+      # -----------------------------------------------------------------
+      # Always collect Kubernetes diagnostics
+      # -----------------------------------------------------------------
+      - name: Collect Kubernetes diagnostics
+        if: always()
+        run: |
+          echo "===== ALL PODS ====="
+          kubectl get pods -A -o wide || true
+
+          echo "===== DEPLOYMENTS ====="
+          kubectl get deployments -A -o wide || true
+
+          echo "===== SERVICES ====="
+          kubectl get services -A || true
+
+          echo "===== EVENTS ====="
+          kubectl get events -A \
+            --sort-by=.lastTimestamp || true
+
+          echo "===== BACKEND DESCRIPTION ====="
+          kubectl describe deployment backend \
+            -n production || true
+
+          echo "===== FRONTEND DESCRIPTION ====="
+          kubectl describe deployment frontend \
+            -n production || true
 
   # ---------------------------------------------------------------------
   # Stage 7: Audit + compliance dashboard
-  # Always runs so the pipeline records the outcome even when an
-  # earlier stage fails.
   # ---------------------------------------------------------------------
   audit:
     name: "7. Audit Log + Compliance Dashboard"
@@ -431,6 +587,8 @@ jobs:
       - vuln-scan
       - policy-check
       - risk-prediction
+      - secret-rotation
+      - deploy
 
     if: always()
 
@@ -447,10 +605,41 @@ jobs:
 
       - name: Write audit event
         run: |
+          RISK_SCORE="${{ needs.risk-prediction.outputs.risk_score || '0' }}"
+
+          PIPELINE_STATUS="success"
+
+          if [ "${{ needs.secret-scan.result }}" != "success" ]; then
+            PIPELINE_STATUS="failed"
+          fi
+
+          if [ "${{ needs.vuln-scan.result }}" != "success" ]; then
+            PIPELINE_STATUS="failed"
+          fi
+
+          if [ "${{ needs.policy-check.result }}" != "success" ]; then
+            PIPELINE_STATUS="failed"
+          fi
+
+          if [ "${{ needs.risk-prediction.result }}" != "success" ]; then
+            PIPELINE_STATUS="failed"
+          fi
+
+          if [ "${{ needs.secret-rotation.result }}" != "success" ]; then
+            PIPELINE_STATUS="failed"
+          fi
+
+          if [ "${{ needs.deploy.result }}" != "success" ]; then
+            PIPELINE_STATUS="failed"
+          fi
+
+          echo "Pipeline status: $PIPELINE_STATUS"
+          echo "Risk score: $RISK_SCORE"
+
           python scripts/audit_logger.py \
             --run-id "${{ github.run_id }}" \
             --commit "${{ github.sha }}" \
             --actor "${{ github.actor }}" \
-            --risk-score "${{ needs.risk-prediction.outputs.risk_score || '0' }}" \
-            --status "${{ job.status }}" \
+            --risk-score "$RISK_SCORE" \
+            --status "$PIPELINE_STATUS" \
             --push-metrics "${{ secrets.PROMETHEUS_PUSHGATEWAY }}"
