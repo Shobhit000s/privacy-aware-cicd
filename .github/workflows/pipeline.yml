@@ -1,4 +1,4 @@
-name: Privacy-Aware CI/CD Pipeline
+=name: Privacy-Aware CI/CD Pipeline
 
 on:
   push:
@@ -87,8 +87,6 @@ jobs:
 
       # -----------------------------------------------------------------
       # Diagnostic backend scan
-      # Shows HIGH/CRITICAL vulnerabilities in normal table format.
-      # Does NOT fail the job.
       # -----------------------------------------------------------------
       - name: Show backend vulnerabilities
         uses: aquasecurity/trivy-action@v0.35.0
@@ -101,7 +99,6 @@ jobs:
 
       # -----------------------------------------------------------------
       # Actual backend security gate
-      # Generates SARIF and fails on HIGH/CRITICAL.
       # -----------------------------------------------------------------
       - name: Trivy scan — backend (fail on CRITICAL/HIGH)
         uses: aquasecurity/trivy-action@v0.35.0
@@ -116,8 +113,6 @@ jobs:
 
       # -----------------------------------------------------------------
       # Diagnostic frontend scan
-      # Always runs so we can see frontend vulnerabilities even when
-      # backend Trivy fails.
       # -----------------------------------------------------------------
       - name: Show frontend vulnerabilities
         if: always()
@@ -131,7 +126,6 @@ jobs:
 
       # -----------------------------------------------------------------
       # Actual frontend security gate
-      # Generates SARIF and fails on HIGH/CRITICAL.
       # -----------------------------------------------------------------
       - name: Trivy scan — frontend (fail on CRITICAL/HIGH)
         if: always()
@@ -248,7 +242,11 @@ jobs:
             "import sys; s=float('$SCORE'); sys.exit(1 if s >= ${{ env.RISK_THRESHOLD }} else 0)"
 
   # ---------------------------------------------------------------------
-  # Stage 5: Secret rotation
+  # Stage 5: Vault Secret Rotation
+  #
+  # A temporary Vault development server is created inside the GitHub
+  # Actions runner. This avoids requiring the runner to reach the Vault
+  # running on the developer's local machine.
   # ---------------------------------------------------------------------
   secret-rotation:
     name: "5. Vault Secret Rotation"
@@ -268,20 +266,102 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      - name: Authenticate to Vault
-        uses: hashicorp/vault-action@v3
-        with:
-          url: ${{ secrets.VAULT_ADDR }}
-          method: jwt
-          role: github-actions-ci
-          secrets: |
-            secret/data/ci ci_role_id | CI_ROLE_ID
+      # ---------------------------------------------------------------
+      # Start temporary Vault
+      # ---------------------------------------------------------------
+      - name: Start temporary Vault
+        run: |
+          docker run -d \
+            --name github-vault \
+            -p 8200:8200 \
+            -e VAULT_DEV_ROOT_TOKEN_ID=ci-dev-root-token \
+            -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
+            hashicorp/vault:1.17
 
+      # ---------------------------------------------------------------
+      # Wait until Vault is ready
+      # ---------------------------------------------------------------
+      - name: Wait for Vault
+        run: |
+          for i in {1..30}; do
+            if curl -fsS \
+              http://127.0.0.1:8200/v1/sys/health \
+              > /dev/null; then
+
+              echo "Vault is ready."
+              exit 0
+            fi
+
+            echo "Waiting for Vault..."
+            sleep 2
+          done
+
+          echo "Vault did not become ready."
+          docker logs github-vault
+          exit 1
+
+      # ---------------------------------------------------------------
+      # Configure Vault
+      # ---------------------------------------------------------------
+      - name: Configure Vault
+        env:
+          VAULT_ADDR: http://127.0.0.1:8200
+          VAULT_TOKEN: ci-dev-root-token
+        run: |
+          echo "Configuring temporary Vault..."
+
+          docker exec github-vault \
+            vault secrets enable \
+            -path=secret \
+            -version=2 \
+            kv || true
+
+          docker exec github-vault \
+            vault kv put secret/ci \
+            ci_role_id="ci-demo-role"
+
+          docker exec github-vault \
+            vault kv put secret/prod/backend \
+            database_url="postgresql://ci-user:ci-password@localhost:5432/privacy_cicd" \
+            jwt_secret_key="ci-demo-jwt-secret"
+
+          echo "Vault configuration completed."
+
+      # ---------------------------------------------------------------
+      # Verify Vault secrets
+      # ---------------------------------------------------------------
+      - name: Verify Vault secrets
+        env:
+          VAULT_ADDR: http://127.0.0.1:8200
+          VAULT_TOKEN: ci-dev-root-token
+        run: |
+          docker exec github-vault \
+            vault kv get secret/ci
+
+          docker exec github-vault \
+            vault kv get secret/prod/backend
+
+          echo "Vault secret verification passed."
+
+      # ---------------------------------------------------------------
+      # Run project's secret rotation script
+      # ---------------------------------------------------------------
       - name: Rotate touched secrets
+        env:
+          VAULT_ADDR: http://127.0.0.1:8200
+          VAULT_TOKEN: ci-dev-root-token
         run: |
           python scripts/secret_rotation.py \
             --diff-base origin/main \
             --vault-addr "$VAULT_ADDR"
+
+      # ---------------------------------------------------------------
+      # Always clean up temporary Vault
+      # ---------------------------------------------------------------
+      - name: Stop temporary Vault
+        if: always()
+        run: |
+          docker rm -f github-vault || true
 
   # ---------------------------------------------------------------------
   # Stage 6: Deploy
