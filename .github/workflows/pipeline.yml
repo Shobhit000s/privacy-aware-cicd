@@ -388,7 +388,8 @@ jobs:
       packages: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       # -----------------------------------------------------------------
       # Login to GitHub Container Registry
@@ -419,23 +420,34 @@ jobs:
             -f app/frontend/Dockerfile app/frontend/
 
       # -----------------------------------------------------------------
-      # Push backend to GHCR
+      # Build ops dashboard
+      # -----------------------------------------------------------------
+      - name: Build ops dashboard image
+        run: |
+          docker build \
+            -t $REGISTRY/privacy-cicd-ops-dashboard:${{ github.sha }} \
+            -f docker/Dockerfile .
+
+      # -----------------------------------------------------------------
+      # Push images to GHCR
       # -----------------------------------------------------------------
       - name: Push backend image
         run: |
           docker push \
             $REGISTRY/$IMAGE_BACKEND:${{ github.sha }}
 
-      # -----------------------------------------------------------------
-      # Push frontend to GHCR
-      # -----------------------------------------------------------------
       - name: Push frontend image
         run: |
           docker push \
             $REGISTRY/$IMAGE_FRONTEND:${{ github.sha }}
 
+      - name: Push ops dashboard image
+        run: |
+          docker push \
+            $REGISTRY/privacy-cicd-ops-dashboard:${{ github.sha }}
+
       # -----------------------------------------------------------------
-      # Install/create temporary Kubernetes cluster
+      # Create temporary Kind cluster
       # -----------------------------------------------------------------
       - name: Create temporary Kubernetes cluster
         uses: helm/kind-action@v1.14.0
@@ -443,19 +455,14 @@ jobs:
           cluster_name: privacy-cicd
           wait: 120s
 
-      # -----------------------------------------------------------------
-      # Check Kubernetes cluster
-      # -----------------------------------------------------------------
       - name: Verify Kubernetes cluster
         run: |
           kubectl cluster-info
-          kubectl get nodes
+          kubectl get nodes -o wide
           kubectl get namespaces
 
       # -----------------------------------------------------------------
       # Load locally built images into Kind
-      # -----------------------------------------------------------------
-      # This avoids requiring Kubernetes to authenticate to GHCR.
       # -----------------------------------------------------------------
       - name: Load backend image into Kind
         run: |
@@ -469,10 +476,13 @@ jobs:
             $REGISTRY/$IMAGE_FRONTEND:${{ github.sha }} \
             --name privacy-cicd
 
-      # -----------------------------------------------------------------
-      # Verify images inside Kind
-      # -----------------------------------------------------------------
-      - name: Verify images
+      - name: Load ops dashboard image into Kind
+        run: |
+          kind load docker-image \
+            $REGISTRY/privacy-cicd-ops-dashboard:${{ github.sha }} \
+            --name privacy-cicd
+
+      - name: Verify images inside Kind
         run: |
           echo "===== IMAGES INSIDE KIND ====="
           docker exec privacy-cicd-control-plane \
@@ -482,7 +492,7 @@ jobs:
           docker images | grep privacy-cicd || true
 
       # -----------------------------------------------------------------
-      # Update Kubernetes manifests with exact image names
+      # Replace image placeholders in the existing k8s/base manifests
       # -----------------------------------------------------------------
       - name: Update Kubernetes image references
         run: |
@@ -494,14 +504,43 @@ jobs:
             "s#__FRONTEND_IMAGE__#$REGISTRY/$IMAGE_FRONTEND:${{ github.sha }}#g" \
             k8s/base/frontend-deployment.yaml
 
-          echo "===== BACKEND IMAGE REFERENCE ====="
+          sed -i \
+            "s#__IMAGE__#$REGISTRY/privacy-cicd-ops-dashboard:${{ github.sha }}#g" \
+            k8s/base/ops-dashboard-deployment.yaml
+
+          echo "===== BACKEND IMAGE ====="
           grep -n "image:" k8s/base/backend-deployment.yaml
 
-          echo "===== FRONTEND IMAGE REFERENCE ====="
+          echo "===== FRONTEND IMAGE ====="
           grep -n "image:" k8s/base/frontend-deployment.yaml
 
+          echo "===== OPS DASHBOARD IMAGE ====="
+          grep -n "image:" k8s/base/ops-dashboard-deployment.yaml
+
       # -----------------------------------------------------------------
-      # Validate Kubernetes manifests before applying
+      # Fail immediately if any image placeholder remains
+      # -----------------------------------------------------------------
+      - name: Check unresolved image placeholders
+        run: |
+          if grep -R "__BACKEND_IMAGE__" k8s/base; then
+            echo "ERROR: unresolved __BACKEND_IMAGE__ placeholder."
+            exit 1
+          fi
+
+          if grep -R "__FRONTEND_IMAGE__" k8s/base; then
+            echo "ERROR: unresolved __FRONTEND_IMAGE__ placeholder."
+            exit 1
+          fi
+
+          if grep -R "__IMAGE__" k8s/base; then
+            echo "ERROR: unresolved __IMAGE__ placeholder."
+            exit 1
+          fi
+
+          echo "All Kubernetes image placeholders resolved."
+
+      # -----------------------------------------------------------------
+      # Render and validate manifests
       # -----------------------------------------------------------------
       - name: Validate Kubernetes manifests
         run: |
@@ -514,26 +553,132 @@ jobs:
           kubectl version --client
 
       # -----------------------------------------------------------------
-      # Apply Kubernetes manifests
+      # Apply the existing production manifests
       # -----------------------------------------------------------------
       - name: Apply K8s manifests
         run: |
           kubectl apply -k k8s/base/
 
       # -----------------------------------------------------------------
-      # Show deployed resources
+      # The temporary CI Kind cluster does not contain a Vault injector.
+      # Replace the Vault placeholder PostgreSQL Secret with CI-only
+      # credentials before starting the application workloads.
       # -----------------------------------------------------------------
-      - name: Show Kubernetes resources
-        if: always()
+      - name: Configure CI PostgreSQL credentials
         run: |
-          kubectl get namespaces || true
+          kubectl -n production delete secret postgres-credentials \
+            --ignore-not-found
 
-          kubectl get pods -A -o wide || true
+          kubectl -n production create secret generic postgres-credentials \
+            --from-literal=POSTGRES_USER=app_user \
+            --from-literal=POSTGRES_PASSWORD=ci-temporary-password \
+            --from-literal=POSTGRES_DB=privacy_cicd
 
-          kubectl get deployments -A -o wide || true
+          echo "CI PostgreSQL credentials created."
 
-          kubectl get services -A || true
+      # -----------------------------------------------------------------
+      # Backend and ops dashboard runtime configuration
+      # -----------------------------------------------------------------
+      - name: Configure application runtime secrets
+        run: |
+          kubectl -n production delete secret app-runtime-config \
+            --ignore-not-found
 
+          kubectl -n production create secret generic app-runtime-config \
+            --from-literal=DATABASE_URL='postgresql+psycopg2://app_user:ci-temporary-password@postgres:5432/privacy_cicd' \
+            --from-literal=JWT_SECRET_KEY='ci-temporary-jwt-secret'
+
+          echo "CI application runtime configuration created."
+
+      # -----------------------------------------------------------------
+      # Fix frontend non-root nginx binding for the CI deployment.
+      #
+      # The frontend runs as UID 101 and drops all capabilities.
+      # nginx listens on port 80, so NET_BIND_SERVICE is required.
+      # This keeps the container non-root and only adds the capability
+      # needed to bind the existing port 80.
+      # -----------------------------------------------------------------
+      - name: Configure frontend non-root port binding
+        run: |
+          kubectl -n production patch deployment frontend \
+            --type='strategic' \
+            -p='
+          spec:
+            template:
+              spec:
+                containers:
+                - name: frontend
+                  securityContext:
+                    allowPrivilegeEscalation: false
+                    capabilities:
+                      add:
+                      - NET_BIND_SERVICE
+                      drop:
+                      - ALL
+          '
+
+      # -----------------------------------------------------------------
+      # Restart workloads after CI Secrets and frontend security context
+      # have been configured.
+      # -----------------------------------------------------------------
+      - name: Restart application workloads
+        run: |
+          kubectl -n production rollout restart deployment/backend
+          kubectl -n production rollout restart deployment/frontend
+          kubectl -n production rollout restart deployment/ops-dashboard
+
+          # Recreate PostgreSQL so the new Secret values are read by
+          # the container environment.
+          kubectl -n production delete pod \
+            -l app=postgres \
+            --ignore-not-found
+
+      # -----------------------------------------------------------------
+      # Wait for PostgreSQL first
+      # -----------------------------------------------------------------
+      - name: Wait for PostgreSQL rollout
+        run: |
+          if ! kubectl rollout status statefulset/postgres \
+            -n production \
+            --timeout=180s; then
+
+            echo "=================================================="
+            echo "POSTGRES ROLLOUT FAILED"
+            echo "=================================================="
+
+            echo "===== POSTGRES PODS ====="
+            kubectl get pods \
+              -n production \
+              -l app=postgres \
+              -o wide || true
+
+            echo "===== POSTGRES DESCRIPTION ====="
+            kubectl describe pods \
+              -n production \
+              -l app=postgres || true
+
+            echo "===== POSTGRES LOGS ====="
+            kubectl logs \
+              -n production \
+              -l app=postgres \
+              --all-containers=true \
+              --tail=200 || true
+
+            echo "===== PREVIOUS POSTGRES LOGS ====="
+            kubectl logs \
+              -n production \
+              -l app=postgres \
+              --all-containers=true \
+              --previous \
+              --tail=200 || true
+
+            echo "===== POSTGRES EVENTS ====="
+            kubectl get events \
+              -n production \
+              --sort-by='.lastTimestamp' || true
+
+            exit 1
+          fi
 
       # -----------------------------------------------------------------
       # Wait for backend
@@ -544,43 +689,26 @@ jobs:
             -n production \
             --timeout=180s; then
 
-            echo ""
             echo "=================================================="
             echo "BACKEND ROLLOUT FAILED"
             echo "=================================================="
 
-            echo ""
-            echo "===== BACKEND DEPLOYMENT STATUS ====="
+            echo "===== BACKEND DEPLOYMENT ====="
             kubectl get deployment backend \
               -n production \
               -o wide || true
 
-            echo ""
-            echo "===== BACKEND REPLICASETS ====="
-            kubectl get replicasets \
-              -n production \
-              -l app=backend \
-              -o wide || true
-
-            echo ""
             echo "===== BACKEND PODS ====="
             kubectl get pods \
               -n production \
               -l app=backend \
               -o wide || true
 
-            echo ""
-            echo "===== BACKEND POD DESCRIPTIONS ====="
+            echo "===== BACKEND DESCRIPTION ====="
             kubectl describe pods \
               -n production \
               -l app=backend || true
 
-            echo ""
-            echo "===== BACKEND DEPLOYMENT DESCRIPTION ====="
-            kubectl describe deployment backend \
-              -n production || true
-
-            echo ""
             echo "===== BACKEND LOGS ====="
             kubectl logs \
               -n production \
@@ -588,7 +716,6 @@ jobs:
               --all-containers=true \
               --tail=200 || true
 
-            echo ""
             echo "===== PREVIOUS BACKEND LOGS ====="
             kubectl logs \
               -n production \
@@ -597,19 +724,13 @@ jobs:
               --previous \
               --tail=200 || true
 
-            echo ""
-            echo "===== PRODUCTION EVENTS ====="
+            echo "===== BACKEND EVENTS ====="
             kubectl get events \
               -n production \
               --sort-by='.lastTimestamp' || true
 
-            echo ""
-            echo "===== ALL CLUSTER PODS ====="
-            kubectl get pods -A -o wide || true
-
             exit 1
           fi
-
 
       # -----------------------------------------------------------------
       # Wait for frontend
@@ -620,43 +741,26 @@ jobs:
             -n production \
             --timeout=180s; then
 
-            echo ""
             echo "=================================================="
             echo "FRONTEND ROLLOUT FAILED"
             echo "=================================================="
 
-            echo ""
-            echo "===== FRONTEND DEPLOYMENT STATUS ====="
+            echo "===== FRONTEND DEPLOYMENT ====="
             kubectl get deployment frontend \
               -n production \
               -o wide || true
 
-            echo ""
-            echo "===== FRONTEND REPLICASETS ====="
-            kubectl get replicasets \
-              -n production \
-              -l app=frontend \
-              -o wide || true
-
-            echo ""
             echo "===== FRONTEND PODS ====="
             kubectl get pods \
               -n production \
               -l app=frontend \
               -o wide || true
 
-            echo ""
-            echo "===== FRONTEND POD DESCRIPTIONS ====="
+            echo "===== FRONTEND DESCRIPTION ====="
             kubectl describe pods \
               -n production \
               -l app=frontend || true
 
-            echo ""
-            echo "===== FRONTEND DEPLOYMENT DESCRIPTION ====="
-            kubectl describe deployment frontend \
-              -n production || true
-
-            echo ""
             echo "===== FRONTEND LOGS ====="
             kubectl logs \
               -n production \
@@ -664,7 +768,6 @@ jobs:
               --all-containers=true \
               --tail=200 || true
 
-            echo ""
             echo "===== PREVIOUS FRONTEND LOGS ====="
             kubectl logs \
               -n production \
@@ -673,55 +776,120 @@ jobs:
               --previous \
               --tail=200 || true
 
-            echo ""
-            echo "===== PRODUCTION EVENTS ====="
+            echo "===== FRONTEND EVENTS ====="
             kubectl get events \
               -n production \
               --sort-by='.lastTimestamp' || true
 
-            echo ""
-            echo "===== ALL CLUSTER PODS ====="
-            kubectl get pods -A -o wide || true
-
             exit 1
           fi
 
+      # -----------------------------------------------------------------
+      # Wait for ops dashboard
+      # -----------------------------------------------------------------
+      - name: Wait for ops dashboard rollout
+        run: |
+          if ! kubectl rollout status deployment/ops-dashboard \
+            -n production \
+            --timeout=180s; then
+
+            echo "=================================================="
+            echo "OPS DASHBOARD ROLLOUT FAILED"
+            echo "=================================================="
+
+            echo "===== OPS DASHBOARD DEPLOYMENT ====="
+            kubectl get deployment ops-dashboard \
+              -n production \
+              -o wide || true
+
+            echo "===== OPS DASHBOARD PODS ====="
+            kubectl get pods \
+              -n production \
+              -l app=ops-dashboard \
+              -o wide || true
+
+            echo "===== OPS DASHBOARD DESCRIPTION ====="
+            kubectl describe pods \
+              -n production \
+              -l app=ops-dashboard || true
+
+            echo "===== OPS DASHBOARD LOGS ====="
+            kubectl logs \
+              -n production \
+              -l app=ops-dashboard \
+              --all-containers=true \
+              --tail=200 || true
+
+            echo "===== PREVIOUS OPS DASHBOARD LOGS ====="
+            kubectl logs \
+              -n production \
+              -l app=ops-dashboard \
+              --all-containers=true \
+              --previous \
+              --tail=200 || true
+
+            echo "===== OPS DASHBOARD EVENTS ====="
+            kubectl get events \
+              -n production \
+              --sort-by='.lastTimestamp' || true
+
+            exit 1
+          fi
 
       # -----------------------------------------------------------------
       # Final deployment verification
       # -----------------------------------------------------------------
       - name: Verify deployment
         run: |
-          echo "===== BACKEND DEPLOYMENT ====="
+          echo "===== NAMESPACE ====="
+          kubectl get namespace production
+
+          echo ""
+          echo "===== PODS ====="
+          kubectl get pods \
+            -n production \
+            -o wide
+
+          echo ""
+          echo "===== DEPLOYMENTS ====="
+          kubectl get deployments \
+            -n production \
+            -o wide
+
+          echo ""
+          echo "===== STATEFULSETS ====="
+          kubectl get statefulsets \
+            -n production \
+            -o wide
+
+          echo ""
+          echo "===== SERVICES ====="
+          kubectl get services \
+            -n production
+
+          echo ""
+          echo "===== BACKEND ====="
           kubectl get deployment backend \
             -n production \
             -o wide
 
           echo ""
-          echo "===== FRONTEND DEPLOYMENT ====="
+          echo "===== FRONTEND ====="
           kubectl get deployment frontend \
             -n production \
             -o wide
 
           echo ""
-          echo "===== BACKEND PODS ====="
-          kubectl get pods \
+          echo "===== OPS DASHBOARD ====="
+          kubectl get deployment ops-dashboard \
             -n production \
-            -l app=backend \
-            -o wide || true
+            -o wide
 
           echo ""
-          echo "===== FRONTEND PODS ====="
-          kubectl get pods \
+          echo "===== POSTGRES ====="
+          kubectl get statefulset postgres \
             -n production \
-            -l app=frontend \
-            -o wide || true
-
-          echo ""
-          echo "===== SERVICES ====="
-          kubectl get services \
-            -n production || true
-
+            -o wide
 
       # -----------------------------------------------------------------
       # Always collect Kubernetes diagnostics
@@ -729,46 +897,50 @@ jobs:
       - name: Collect Kubernetes diagnostics
         if: always()
         run: |
-          echo "===== ALL PODS ====="
+          echo "========================================="
+          echo "ALL PODS"
+          echo "========================================="
           kubectl get pods -A -o wide || true
 
           echo ""
-          echo "===== DEPLOYMENTS ====="
+          echo "========================================="
+          echo "DEPLOYMENTS"
+          echo "========================================="
           kubectl get deployments -A -o wide || true
 
           echo ""
-          echo "===== SERVICES ====="
+          echo "========================================="
+          echo "STATEFULSETS"
+          echo "========================================="
+          kubectl get statefulsets -A -o wide || true
+
+          echo ""
+          echo "========================================="
+          echo "SERVICES"
+          echo "========================================="
           kubectl get services -A || true
 
           echo ""
-          echo "===== EVENTS ====="
+          echo "========================================="
+          echo "EVENTS"
+          echo "========================================="
           kubectl get events -A \
             --sort-by='.lastTimestamp' || true
 
           echo ""
-          echo "===== BACKEND DESCRIPTION ====="
-          kubectl describe deployment backend \
-            -n production || true
-
-          echo ""
-          echo "===== FRONTEND DESCRIPTION ====="
-          kubectl describe deployment frontend \
-            -n production || true
-
-          echo ""
-          echo "===== BACKEND POD DETAILS ====="
-          kubectl describe pods \
+          echo "========================================="
+          echo "POSTGRES LOGS"
+          echo "========================================="
+          kubectl logs \
             -n production \
-            -l app=backend || true
+            -l app=postgres \
+            --all-containers=true \
+            --tail=200 || true
 
           echo ""
-          echo "===== FRONTEND POD DETAILS ====="
-          kubectl describe pods \
-            -n production \
-            -l app=frontend || true
-
-          echo ""
-          echo "===== BACKEND LOGS ====="
+          echo "========================================="
+          echo "BACKEND LOGS"
+          echo "========================================="
           kubectl logs \
             -n production \
             -l app=backend \
@@ -776,17 +948,24 @@ jobs:
             --tail=200 || true
 
           echo ""
-          echo "===== FRONTEND LOGS ====="
+          echo "========================================="
+          echo "FRONTEND LOGS"
+          echo "========================================="
           kubectl logs \
             -n production \
             -l app=frontend \
             --all-containers=true \
             --tail=200 || true
 
-
-  # ---------------------------------------------------------------------
-  # Stage 7: Audit + compliance dashboard
-  # ---------------------------------------------------------------------
+          echo ""
+          echo "========================================="
+          echo "OPS DASHBOARD LOGS"
+          echo "========================================="
+          kubectl logs \
+            -n production \
+            -l app=ops-dashboard \
+            --all-containers=true \
+            --tail=200 || true
   audit:
     name: "7. Audit Log + Compliance Dashboard"
     runs-on: ubuntu-latest
