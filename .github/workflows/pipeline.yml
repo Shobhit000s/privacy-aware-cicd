@@ -62,6 +62,7 @@ jobs:
           name: privacy-scan-report
           path: privacy-scan-report.json
 
+
   # ---------------------------------------------------------------------
   # Stage 2: Container / dependency vulnerability scan
   # ---------------------------------------------------------------------
@@ -166,6 +167,7 @@ jobs:
           name: trivy-reports
           path: trivy-*.sarif
 
+
   # ---------------------------------------------------------------------
   # Stage 3: Policy-as-code check
   # ---------------------------------------------------------------------
@@ -197,6 +199,7 @@ jobs:
             "data.privacy.deny[_]" \
             --format pretty \
             --fail-defined
+
 
   # ---------------------------------------------------------------------
   # Stage 4: ML privacy-risk prediction
@@ -240,6 +243,7 @@ jobs:
 
           python -c \
             "import sys; s=float('$SCORE'); sys.exit(1 if s >= ${{ env.RISK_THRESHOLD }} else 0)"
+
 
   # ---------------------------------------------------------------------
   # Stage 5: Vault Secret Rotation
@@ -368,6 +372,7 @@ jobs:
         run: |
           docker rm -f github-vault || true
 
+
   # ---------------------------------------------------------------------
   # Stage 6: Build, publish and deploy to temporary Kubernetes
   # ---------------------------------------------------------------------
@@ -449,7 +454,7 @@ jobs:
 
       # -----------------------------------------------------------------
       # Load locally built images into Kind
-      #
+      # -----------------------------------------------------------------
       # This avoids requiring Kubernetes to authenticate to GHCR.
       # -----------------------------------------------------------------
       - name: Load backend image into Kind
@@ -469,8 +474,12 @@ jobs:
       # -----------------------------------------------------------------
       - name: Verify images
         run: |
+          echo "===== IMAGES INSIDE KIND ====="
           docker exec privacy-cicd-control-plane \
             crictl images | grep privacy-cicd || true
+
+          echo "===== DOCKER IMAGES ====="
+          docker images | grep privacy-cicd || true
 
       # -----------------------------------------------------------------
       # Update Kubernetes manifests with exact image names
@@ -485,6 +494,25 @@ jobs:
             "s#__FRONTEND_IMAGE__#$REGISTRY/$IMAGE_FRONTEND:${{ github.sha }}#g" \
             k8s/base/frontend-deployment.yaml
 
+          echo "===== BACKEND IMAGE REFERENCE ====="
+          grep -n "image:" k8s/base/backend-deployment.yaml
+
+          echo "===== FRONTEND IMAGE REFERENCE ====="
+          grep -n "image:" k8s/base/frontend-deployment.yaml
+
+      # -----------------------------------------------------------------
+      # Validate Kubernetes manifests before applying
+      # -----------------------------------------------------------------
+      - name: Validate Kubernetes manifests
+        run: |
+          kubectl kustomize k8s/base/ > /tmp/rendered-manifests.yaml
+
+          echo "===== RENDERED IMAGE REFERENCES ====="
+          grep -n "image:" /tmp/rendered-manifests.yaml || true
+
+          echo "===== KUBERNETES CLIENT VERSION ====="
+          kubectl version --client
+
       # -----------------------------------------------------------------
       # Apply Kubernetes manifests
       # -----------------------------------------------------------------
@@ -498,55 +526,202 @@ jobs:
       - name: Show Kubernetes resources
         if: always()
         run: |
-          kubectl get namespaces
-          kubectl get pods -A
-          kubectl get deployments -A
-          kubectl get services -A
+          kubectl get namespaces || true
+
+          kubectl get pods -A -o wide || true
+
+          kubectl get deployments -A -o wide || true
+
+          kubectl get services -A || true
+
 
       # -----------------------------------------------------------------
       # Wait for backend
       # -----------------------------------------------------------------
       - name: Wait for backend rollout
         run: |
-          kubectl rollout status deployment/backend \
+          if ! kubectl rollout status deployment/backend \
             -n production \
-            --timeout=180s
+            --timeout=180s; then
+
+            echo ""
+            echo "=================================================="
+            echo "BACKEND ROLLOUT FAILED"
+            echo "=================================================="
+
+            echo ""
+            echo "===== BACKEND DEPLOYMENT STATUS ====="
+            kubectl get deployment backend \
+              -n production \
+              -o wide || true
+
+            echo ""
+            echo "===== BACKEND REPLICASETS ====="
+            kubectl get replicasets \
+              -n production \
+              -l app=backend \
+              -o wide || true
+
+            echo ""
+            echo "===== BACKEND PODS ====="
+            kubectl get pods \
+              -n production \
+              -l app=backend \
+              -o wide || true
+
+            echo ""
+            echo "===== BACKEND POD DESCRIPTIONS ====="
+            kubectl describe pods \
+              -n production \
+              -l app=backend || true
+
+            echo ""
+            echo "===== BACKEND DEPLOYMENT DESCRIPTION ====="
+            kubectl describe deployment backend \
+              -n production || true
+
+            echo ""
+            echo "===== BACKEND LOGS ====="
+            kubectl logs \
+              -n production \
+              -l app=backend \
+              --all-containers=true \
+              --tail=200 || true
+
+            echo ""
+            echo "===== PREVIOUS BACKEND LOGS ====="
+            kubectl logs \
+              -n production \
+              -l app=backend \
+              --all-containers=true \
+              --previous \
+              --tail=200 || true
+
+            echo ""
+            echo "===== PRODUCTION EVENTS ====="
+            kubectl get events \
+              -n production \
+              --sort-by='.lastTimestamp' || true
+
+            echo ""
+            echo "===== ALL CLUSTER PODS ====="
+            kubectl get pods -A -o wide || true
+
+            exit 1
+          fi
+
 
       # -----------------------------------------------------------------
       # Wait for frontend
       # -----------------------------------------------------------------
       - name: Wait for frontend rollout
         run: |
-          kubectl rollout status deployment/frontend \
+          if ! kubectl rollout status deployment/frontend \
             -n production \
-            --timeout=180s
+            --timeout=180s; then
+
+            echo ""
+            echo "=================================================="
+            echo "FRONTEND ROLLOUT FAILED"
+            echo "=================================================="
+
+            echo ""
+            echo "===== FRONTEND DEPLOYMENT STATUS ====="
+            kubectl get deployment frontend \
+              -n production \
+              -o wide || true
+
+            echo ""
+            echo "===== FRONTEND REPLICASETS ====="
+            kubectl get replicasets \
+              -n production \
+              -l app=frontend \
+              -o wide || true
+
+            echo ""
+            echo "===== FRONTEND PODS ====="
+            kubectl get pods \
+              -n production \
+              -l app=frontend \
+              -o wide || true
+
+            echo ""
+            echo "===== FRONTEND POD DESCRIPTIONS ====="
+            kubectl describe pods \
+              -n production \
+              -l app=frontend || true
+
+            echo ""
+            echo "===== FRONTEND DEPLOYMENT DESCRIPTION ====="
+            kubectl describe deployment frontend \
+              -n production || true
+
+            echo ""
+            echo "===== FRONTEND LOGS ====="
+            kubectl logs \
+              -n production \
+              -l app=frontend \
+              --all-containers=true \
+              --tail=200 || true
+
+            echo ""
+            echo "===== PREVIOUS FRONTEND LOGS ====="
+            kubectl logs \
+              -n production \
+              -l app=frontend \
+              --all-containers=true \
+              --previous \
+              --tail=200 || true
+
+            echo ""
+            echo "===== PRODUCTION EVENTS ====="
+            kubectl get events \
+              -n production \
+              --sort-by='.lastTimestamp' || true
+
+            echo ""
+            echo "===== ALL CLUSTER PODS ====="
+            kubectl get pods -A -o wide || true
+
+            exit 1
+          fi
+
 
       # -----------------------------------------------------------------
       # Final deployment verification
       # -----------------------------------------------------------------
       - name: Verify deployment
         run: |
-          echo "Backend deployment:"
+          echo "===== BACKEND DEPLOYMENT ====="
           kubectl get deployment backend \
             -n production \
             -o wide
 
-          echo "Frontend deployment:"
+          echo ""
+          echo "===== FRONTEND DEPLOYMENT ====="
           kubectl get deployment frontend \
             -n production \
             -o wide
 
-          echo "Backend pods:"
+          echo ""
+          echo "===== BACKEND PODS ====="
           kubectl get pods \
             -n production \
             -l app=backend \
             -o wide || true
 
-          echo "Frontend pods:"
+          echo ""
+          echo "===== FRONTEND PODS ====="
           kubectl get pods \
             -n production \
             -l app=frontend \
             -o wide || true
+
+          echo ""
+          echo "===== SERVICES ====="
+          kubectl get services \
+            -n production || true
+
 
       # -----------------------------------------------------------------
       # Always collect Kubernetes diagnostics
@@ -557,23 +732,57 @@ jobs:
           echo "===== ALL PODS ====="
           kubectl get pods -A -o wide || true
 
+          echo ""
           echo "===== DEPLOYMENTS ====="
           kubectl get deployments -A -o wide || true
 
+          echo ""
           echo "===== SERVICES ====="
           kubectl get services -A || true
 
+          echo ""
           echo "===== EVENTS ====="
           kubectl get events -A \
-            --sort-by=.lastTimestamp || true
+            --sort-by='.lastTimestamp' || true
 
+          echo ""
           echo "===== BACKEND DESCRIPTION ====="
           kubectl describe deployment backend \
             -n production || true
 
+          echo ""
           echo "===== FRONTEND DESCRIPTION ====="
           kubectl describe deployment frontend \
             -n production || true
+
+          echo ""
+          echo "===== BACKEND POD DETAILS ====="
+          kubectl describe pods \
+            -n production \
+            -l app=backend || true
+
+          echo ""
+          echo "===== FRONTEND POD DETAILS ====="
+          kubectl describe pods \
+            -n production \
+            -l app=frontend || true
+
+          echo ""
+          echo "===== BACKEND LOGS ====="
+          kubectl logs \
+            -n production \
+            -l app=backend \
+            --all-containers=true \
+            --tail=200 || true
+
+          echo ""
+          echo "===== FRONTEND LOGS ====="
+          kubectl logs \
+            -n production \
+            -l app=frontend \
+            --all-containers=true \
+            --tail=200 || true
+
 
   # ---------------------------------------------------------------------
   # Stage 7: Audit + compliance dashboard
