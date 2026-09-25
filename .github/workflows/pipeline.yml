@@ -267,6 +267,25 @@ jobs:
           pip install -r requirements.txt
 
       # -----------------------------------------------------------------
+      # Generate ephemeral Vault credentials for this CI run.
+      # -----------------------------------------------------------------
+      - name: Generate ephemeral Vault credentials
+        run: |
+          VAULT_ROOT_TOKEN="$(openssl rand -hex 32)"
+          VAULT_DB_PASSWORD="$(openssl rand -hex 24)"
+          VAULT_JWT_SECRET="$(openssl rand -hex 32)"
+
+          echo "::add-mask::$VAULT_ROOT_TOKEN"
+          echo "::add-mask::$VAULT_DB_PASSWORD"
+          echo "::add-mask::$VAULT_JWT_SECRET"
+
+          {
+            echo "VAULT_ROOT_TOKEN=$VAULT_ROOT_TOKEN"
+            echo "VAULT_DB_PASSWORD=$VAULT_DB_PASSWORD"
+            echo "VAULT_JWT_SECRET=$VAULT_JWT_SECRET"
+          } >> "$GITHUB_ENV"
+
+      # -----------------------------------------------------------------
       # Start temporary Vault
       # -----------------------------------------------------------------
       - name: Start temporary Vault
@@ -274,7 +293,7 @@ jobs:
           docker run -d \
             --name github-vault \
             -p 8200:8200 \
-            -e VAULT_DEV_ROOT_TOKEN_ID=ci-dev-root-token \
+            -e VAULT_DEV_ROOT_TOKEN_ID="$VAULT_ROOT_TOKEN" \
             -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
             hashicorp/vault:1.17
 
@@ -309,7 +328,7 @@ jobs:
 
           docker exec \
             -e VAULT_ADDR=http://127.0.0.1:8200 \
-            -e VAULT_TOKEN=ci-dev-root-token \
+            -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" \
             github-vault \
             vault secrets enable \
             -path=secret \
@@ -318,18 +337,18 @@ jobs:
 
           docker exec \
             -e VAULT_ADDR=http://127.0.0.1:8200 \
-            -e VAULT_TOKEN=ci-dev-root-token \
+            -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" \
             github-vault \
             vault kv put secret/ci \
             ci_role_id="ci-demo-role"
 
           docker exec \
             -e VAULT_ADDR=http://127.0.0.1:8200 \
-            -e VAULT_TOKEN=ci-dev-root-token \
+            -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" \
             github-vault \
             vault kv put secret/prod/backend \
-            database_url="postgresql://ci-user:ci-password@localhost:5432/privacy_cicd" \
-            jwt_secret_key="ci-demo-jwt-secret"
+            database_url="postgresql://ci-user:$VAULT_DB_PASSWORD@localhost:5432/privacy_cicd" \
+            jwt_secret_key="$VAULT_JWT_SECRET"
 
           echo "Vault configuration completed."
 
@@ -340,13 +359,13 @@ jobs:
         run: |
           docker exec \
             -e VAULT_ADDR=http://127.0.0.1:8200 \
-            -e VAULT_TOKEN=ci-dev-root-token \
+            -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" \
             github-vault \
             vault kv get secret/ci
 
           docker exec \
             -e VAULT_ADDR=http://127.0.0.1:8200 \
-            -e VAULT_TOKEN=ci-dev-root-token \
+            -e VAULT_TOKEN="$VAULT_ROOT_TOKEN" \
             github-vault \
             vault kv get secret/prod/backend
 
@@ -358,7 +377,7 @@ jobs:
       - name: Rotate touched secrets
         run: |
           export VAULT_ADDR=http://127.0.0.1:8200
-          export VAULT_TOKEN=ci-dev-root-token
+          export VAULT_TOKEN="$VAULT_ROOT_TOKEN"
 
           python scripts/secret_rotation.py \
             --diff-base origin/main \
@@ -564,6 +583,22 @@ jobs:
       # Replace the Vault placeholder PostgreSQL Secret with CI-only
       # credentials before starting the application workloads.
       # -----------------------------------------------------------------
+      - name: Generate ephemeral application credentials
+        run: |
+          POSTGRES_PASSWORD="$(openssl rand -hex 24)"
+          JWT_SECRET_KEY="$(openssl rand -hex 32)"
+          DATABASE_URL="postgresql+psycopg2://app_user:${POSTGRES_PASSWORD}@postgres:5432/privacy_cicd"
+
+          echo "::add-mask::$POSTGRES_PASSWORD"
+          echo "::add-mask::$JWT_SECRET_KEY"
+          echo "::add-mask::$DATABASE_URL"
+
+          {
+            echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
+            echo "JWT_SECRET_KEY=$JWT_SECRET_KEY"
+            echo "DATABASE_URL=$DATABASE_URL"
+          } >> "$GITHUB_ENV"
+
       - name: Configure CI PostgreSQL credentials
         run: |
           kubectl -n production delete secret postgres-credentials \
@@ -571,7 +606,7 @@ jobs:
 
           kubectl -n production create secret generic postgres-credentials \
             --from-literal=POSTGRES_USER=app_user \
-            --from-literal=POSTGRES_PASSWORD=ci-temporary-password \
+            --from-literal=POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
             --from-literal=POSTGRES_DB=privacy_cicd
 
           echo "CI PostgreSQL credentials created."
@@ -585,8 +620,8 @@ jobs:
             --ignore-not-found
 
           kubectl -n production create secret generic app-runtime-config \
-            --from-literal=DATABASE_URL='postgresql+psycopg2://app_user:ci-temporary-password@postgres:5432/privacy_cicd' \
-            --from-literal=JWT_SECRET_KEY='ci-temporary-jwt-secret'
+            --from-literal=DATABASE_URL="$DATABASE_URL" \
+            --from-literal=JWT_SECRET_KEY="$JWT_SECRET_KEY"
 
           echo "CI application runtime configuration created."
 
