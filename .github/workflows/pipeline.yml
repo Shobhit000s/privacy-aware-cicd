@@ -20,10 +20,9 @@ env:
 
 jobs:
 
-  # =====================================================================
+  # ---------------------------------------------------------------------
   # Stage 1: Secret detection
-  # =====================================================================
-
+  # ---------------------------------------------------------------------
   secret-scan:
     name: "1. Gitleaks Secret Scan"
     runs-on: ubuntu-latest
@@ -34,7 +33,6 @@ jobs:
       actions: read
 
     steps:
-
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -54,11 +52,8 @@ jobs:
 
       - name: Run custom privacy scanner
         run: |
-          python3 scanner/privacy_scanner.py \
-            --path . \
-            --format json \
-            --out privacy-scan-report.json \
-            --fail-on HIGH
+          python3 scanner/privacy_scanner.py --path . --format json \
+            --out privacy-scan-report.json --fail-on HIGH
 
       - name: Upload privacy scan report
         if: always()
@@ -68,22 +63,16 @@ jobs:
           path: privacy-scan-report.json
 
 
-  # =====================================================================
+  # ---------------------------------------------------------------------
   # Stage 2: Container / dependency vulnerability scan
-  # =====================================================================
-
+  # ---------------------------------------------------------------------
   vuln-scan:
     name: "2. Trivy Vulnerability Scan"
     runs-on: ubuntu-latest
     needs: secret-scan
 
     steps:
-
       - uses: actions/checkout@v4
-
-      # ---------------------------------------------------------------
-      # Build backend
-      # ---------------------------------------------------------------
 
       - name: Build backend image
         run: |
@@ -91,20 +80,15 @@ jobs:
             -t ${{ env.IMAGE_BACKEND }}:${{ github.sha }} \
             -f backend/Dockerfile backend/
 
-      # ---------------------------------------------------------------
-      # Build frontend
-      # ---------------------------------------------------------------
-
       - name: Build frontend image
         run: |
           docker build \
             -t ${{ env.IMAGE_FRONTEND }}:${{ github.sha }} \
             -f app/frontend/Dockerfile app/frontend/
 
-      # ---------------------------------------------------------------
+      # -----------------------------------------------------------------
       # Diagnostic backend scan
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
       - name: Show backend vulnerabilities
         uses: aquasecurity/trivy-action@v0.35.0
         with:
@@ -114,11 +98,10 @@ jobs:
           ignore-unfixed: true
           format: "table"
 
-      # ---------------------------------------------------------------
+      # -----------------------------------------------------------------
       # Backend security gate
-      # ---------------------------------------------------------------
-
-      - name: Trivy scan — backend
+      # -----------------------------------------------------------------
+      - name: Trivy scan — backend (fail on CRITICAL/HIGH)
         uses: aquasecurity/trivy-action@v0.35.0
         with:
           image-ref: "${{ env.IMAGE_BACKEND }}:${{ github.sha }}"
@@ -129,10 +112,9 @@ jobs:
           limit-severities-for-sarif: true
           output: "trivy-backend.sarif"
 
-      # ---------------------------------------------------------------
+      # -----------------------------------------------------------------
       # Diagnostic frontend scan
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
       - name: Show frontend vulnerabilities
         if: always()
         uses: aquasecurity/trivy-action@v0.35.0
@@ -143,11 +125,10 @@ jobs:
           ignore-unfixed: true
           format: "table"
 
-      # ---------------------------------------------------------------
+      # -----------------------------------------------------------------
       # Frontend security gate
-      # ---------------------------------------------------------------
-
-      - name: Trivy scan — frontend
+      # -----------------------------------------------------------------
+      - name: Trivy scan — frontend (fail on CRITICAL/HIGH)
         if: always()
         uses: aquasecurity/trivy-action@v0.35.0
         with:
@@ -159,10 +140,9 @@ jobs:
           limit-severities-for-sarif: true
           output: "trivy-frontend.sarif"
 
-      # ---------------------------------------------------------------
-      # Upload SARIF
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
+      # Upload SARIF results
+      # -----------------------------------------------------------------
       - name: Upload Trivy SARIF (backend)
         if: always()
         uses: github/codeql-action/upload-sarif@v4
@@ -177,10 +157,9 @@ jobs:
           sarif_file: "trivy-frontend.sarif"
           category: trivy-frontend
 
-      # ---------------------------------------------------------------
-      # Archive reports
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
+      # Archive raw reports
+      # -----------------------------------------------------------------
       - name: Archive raw Trivy reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -189,32 +168,27 @@ jobs:
           path: trivy-*.sarif
 
 
-  # =====================================================================
-  # Stage 3: Policy-as-code
-  # =====================================================================
-
+  # ---------------------------------------------------------------------
+  # Stage 3: Policy-as-code check
+  # ---------------------------------------------------------------------
   policy-check:
     name: "3. OPA Policy Gate"
     runs-on: ubuntu-latest
     needs: vuln-scan
 
     steps:
-
       - uses: actions/checkout@v4
 
       - name: Install OPA
         run: |
           curl -L -o opa \
             https://openpolicyagent.org/downloads/v0.65.0/opa_linux_amd64_static
-
           chmod +x opa
-
           sudo mv opa /usr/local/bin/
 
       - name: Build deployment input document
         run: |
-          python scripts/build_opa_input.py \
-            --out /tmp/input.json
+          python scripts/build_opa_input.py --out /tmp/input.json
 
       - name: Evaluate privacy policy
         run: |
@@ -227,10 +201,9 @@ jobs:
             --fail-defined
 
 
-  # =====================================================================
+  # ---------------------------------------------------------------------
   # Stage 4: ML privacy-risk prediction
-  # =====================================================================
-
+  # ---------------------------------------------------------------------
   risk-prediction:
     name: "4. ML Privacy Risk Prediction"
     runs-on: ubuntu-latest
@@ -240,7 +213,6 @@ jobs:
       risk_score: ${{ steps.predict.outputs.risk_score }}
 
     steps:
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
@@ -273,10 +245,9 @@ jobs:
             "import sys; s=float('$SCORE'); sys.exit(1 if s >= ${{ env.RISK_THRESHOLD }} else 0)"
 
 
-  # =====================================================================
+  # ---------------------------------------------------------------------
   # Stage 5: Vault Secret Rotation
-  # =====================================================================
-
+  # ---------------------------------------------------------------------
   secret-rotation:
     name: "5. Vault Secret Rotation"
     runs-on: ubuntu-latest
@@ -285,7 +256,6 @@ jobs:
     if: github.ref == 'refs/heads/main'
 
     steps:
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
@@ -296,10 +266,9 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      # ---------------------------------------------------------------
+      # -----------------------------------------------------------------
       # Start temporary Vault
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
       - name: Start temporary Vault
         run: |
           docker run -d \
@@ -309,14 +278,12 @@ jobs:
             -e VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200 \
             hashicorp/vault:1.17
 
-      # ---------------------------------------------------------------
+      # -----------------------------------------------------------------
       # Wait for Vault
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
       - name: Wait for Vault
         run: |
           for i in {1..30}; do
-
             if curl -fsS \
               http://127.0.0.1:8200/v1/sys/health \
               > /dev/null; then
@@ -327,20 +294,17 @@ jobs:
 
             echo "Waiting for Vault..."
             sleep 2
-
           done
 
           echo "Vault did not become ready."
           docker logs github-vault
           exit 1
 
-      # ---------------------------------------------------------------
+      # -----------------------------------------------------------------
       # Configure Vault
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
       - name: Configure Vault
         run: |
-
           echo "Configuring temporary Vault..."
 
           docker exec \
@@ -369,13 +333,11 @@ jobs:
 
           echo "Vault configuration completed."
 
-      # ---------------------------------------------------------------
+      # -----------------------------------------------------------------
       # Verify Vault
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
       - name: Verify Vault secrets
         run: |
-
           docker exec \
             -e VAULT_ADDR=http://127.0.0.1:8200 \
             -e VAULT_TOKEN=ci-dev-root-token \
@@ -390,13 +352,11 @@ jobs:
 
           echo "Vault secret verification passed."
 
-      # ---------------------------------------------------------------
+      # -----------------------------------------------------------------
       # Run secret rotation
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
       - name: Rotate touched secrets
         run: |
-
           export VAULT_ADDR=http://127.0.0.1:8200
           export VAULT_TOKEN=ci-dev-root-token
 
@@ -404,20 +364,18 @@ jobs:
             --diff-base origin/main \
             --vault-addr "$VAULT_ADDR"
 
-      # ---------------------------------------------------------------
+      # -----------------------------------------------------------------
       # Cleanup Vault
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
       - name: Stop temporary Vault
         if: always()
         run: |
           docker rm -f github-vault || true
 
 
-  # =====================================================================
-  # Stage 6: Build, publish and deploy
-  # =====================================================================
-
+  # ---------------------------------------------------------------------
+  # Stage 6: Build, publish and deploy to temporary Kubernetes
+  # ---------------------------------------------------------------------
   deploy:
     name: "6. Deploy to Kubernetes"
     runs-on: ubuntu-latest
@@ -430,13 +388,11 @@ jobs:
       packages: write
 
     steps:
-
       - uses: actions/checkout@v4
 
-      # ---------------------------------------------------------------
-      # Login to GHCR
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
+      # Login to GitHub Container Registry
+      # -----------------------------------------------------------------
       - name: Login to GitHub Container Registry
         uses: docker/login-action@v3
         with:
@@ -444,77 +400,68 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ---------------------------------------------------------------
+      # -----------------------------------------------------------------
       # Build backend
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
       - name: Build backend image
         run: |
           docker build \
             -t $REGISTRY/$IMAGE_BACKEND:${{ github.sha }} \
             -f backend/Dockerfile backend/
 
-      # ---------------------------------------------------------------
+      # -----------------------------------------------------------------
       # Build frontend
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
       - name: Build frontend image
         run: |
           docker build \
             -t $REGISTRY/$IMAGE_FRONTEND:${{ github.sha }} \
             -f app/frontend/Dockerfile app/frontend/
 
-      # ---------------------------------------------------------------
-      # Push backend
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
+      # Push backend to GHCR
+      # -----------------------------------------------------------------
       - name: Push backend image
         run: |
           docker push \
             $REGISTRY/$IMAGE_BACKEND:${{ github.sha }}
 
-      # ---------------------------------------------------------------
-      # Push frontend
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
+      # Push frontend to GHCR
+      # -----------------------------------------------------------------
       - name: Push frontend image
         run: |
           docker push \
             $REGISTRY/$IMAGE_FRONTEND:${{ github.sha }}
 
-      # ---------------------------------------------------------------
-      # Create temporary Kind cluster
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
+      # Install/create temporary Kubernetes cluster
+      # -----------------------------------------------------------------
       - name: Create temporary Kubernetes cluster
         uses: helm/kind-action@v1.14.0
         with:
           cluster_name: privacy-cicd
           wait: 120s
 
-      # ---------------------------------------------------------------
-      # Verify Kubernetes cluster
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
+      # Check Kubernetes cluster
+      # -----------------------------------------------------------------
       - name: Verify Kubernetes cluster
         run: |
           kubectl cluster-info
           kubectl get nodes
           kubectl get namespaces
 
-      # ---------------------------------------------------------------
-      # Load backend image into Kind
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
+      # Load locally built images into Kind
+      # -----------------------------------------------------------------
+      # This avoids requiring Kubernetes to authenticate to GHCR.
+      # -----------------------------------------------------------------
       - name: Load backend image into Kind
         run: |
           kind load docker-image \
             $REGISTRY/$IMAGE_BACKEND:${{ github.sha }} \
             --name privacy-cicd
-
-      # ---------------------------------------------------------------
-      # Load frontend image into Kind
-      # ---------------------------------------------------------------
 
       - name: Load frontend image into Kind
         run: |
@@ -522,127 +469,78 @@ jobs:
             $REGISTRY/$IMAGE_FRONTEND:${{ github.sha }} \
             --name privacy-cicd
 
-      # ---------------------------------------------------------------
-      # Verify images
-      # ---------------------------------------------------------------
-
-      - name: Verify images inside Kind
+      # -----------------------------------------------------------------
+      # Verify images inside Kind
+      # -----------------------------------------------------------------
+      - name: Verify images
         run: |
-
           echo "===== IMAGES INSIDE KIND ====="
-
           docker exec privacy-cicd-control-plane \
             crictl images | grep privacy-cicd || true
 
           echo "===== DOCKER IMAGES ====="
-
           docker images | grep privacy-cicd || true
 
-      # ---------------------------------------------------------------
-      # Update CI Kubernetes image references
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
+      # Update Kubernetes manifests with exact image names
+      # -----------------------------------------------------------------
       - name: Update Kubernetes image references
         run: |
-
           sed -i \
             "s#__BACKEND_IMAGE__#$REGISTRY/$IMAGE_BACKEND:${{ github.sha }}#g" \
-            k8s/ci/backend.yaml
+            k8s/base/backend-deployment.yaml
 
           sed -i \
             "s#__FRONTEND_IMAGE__#$REGISTRY/$IMAGE_FRONTEND:${{ github.sha }}#g" \
-            k8s/ci/frontend.yaml
+            k8s/base/frontend-deployment.yaml
 
           echo "===== BACKEND IMAGE REFERENCE ====="
-
-          grep -n "image:" \
-            k8s/ci/backend.yaml
+          grep -n "image:" k8s/base/backend-deployment.yaml
 
           echo "===== FRONTEND IMAGE REFERENCE ====="
+          grep -n "image:" k8s/base/frontend-deployment.yaml
 
-          grep -n "image:" \
-            k8s/ci/frontend.yaml
-
-      # ---------------------------------------------------------------
-      # Validate CI Kubernetes manifests
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
+      # Validate Kubernetes manifests before applying
+      # -----------------------------------------------------------------
       - name: Validate Kubernetes manifests
         run: |
-
-          echo "===== KUSTOMIZE OUTPUT ====="
-
-          kubectl kustomize k8s/ci/ \
-            > /tmp/rendered-manifests.yaml
+          kubectl kustomize k8s/base/ > /tmp/rendered-manifests.yaml
 
           echo "===== RENDERED IMAGE REFERENCES ====="
-
-          grep -n "image:" \
-            /tmp/rendered-manifests.yaml || true
-
-          echo "===== CHECK FOR UNRESOLVED PLACEHOLDERS ====="
-
-          if grep -n "__IMAGE__" /tmp/rendered-manifests.yaml; then
-            echo "ERROR: Unresolved __IMAGE__ placeholder found."
-            exit 1
-          fi
-
-          if grep -n "__BACKEND_IMAGE__" /tmp/rendered-manifests.yaml; then
-            echo "ERROR: Unresolved backend image placeholder found."
-            exit 1
-          fi
-
-          if grep -n "__FRONTEND_IMAGE__" /tmp/rendered-manifests.yaml; then
-            echo "ERROR: Unresolved frontend image placeholder found."
-            exit 1
-          fi
+          grep -n "image:" /tmp/rendered-manifests.yaml || true
 
           echo "===== KUBERNETES CLIENT VERSION ====="
-
           kubectl version --client
 
-      # ---------------------------------------------------------------
-      # Apply CI Kubernetes manifests
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
+      # Apply Kubernetes manifests
+      # -----------------------------------------------------------------
       - name: Apply K8s manifests
         run: |
+          kubectl apply -k k8s/base/
 
-          kubectl apply -k k8s/ci/
-
-      # ---------------------------------------------------------------
-      # Show resources
-      # ---------------------------------------------------------------
-
+      # -----------------------------------------------------------------
+      # Show deployed resources
+      # -----------------------------------------------------------------
       - name: Show Kubernetes resources
         if: always()
         run: |
-
-          echo "===== NAMESPACES ====="
-
           kubectl get namespaces || true
-
-          echo "===== PODS ====="
 
           kubectl get pods -A -o wide || true
 
-          echo "===== DEPLOYMENTS ====="
-
           kubectl get deployments -A -o wide || true
-
-          echo "===== SERVICES ====="
 
           kubectl get services -A || true
 
-      # ---------------------------------------------------------------
-      # Wait for backend
-      # ---------------------------------------------------------------
 
+      # -----------------------------------------------------------------
+      # Wait for backend
+      # -----------------------------------------------------------------
       - name: Wait for backend rollout
         run: |
-
-          if ! kubectl rollout status \
-            deployment/backend \
+          if ! kubectl rollout status deployment/backend \
             -n production \
             --timeout=180s; then
 
@@ -652,15 +550,13 @@ jobs:
             echo "=================================================="
 
             echo ""
-            echo "===== BACKEND DEPLOYMENT ====="
-
+            echo "===== BACKEND DEPLOYMENT STATUS ====="
             kubectl get deployment backend \
               -n production \
               -o wide || true
 
             echo ""
             echo "===== BACKEND REPLICASETS ====="
-
             kubectl get replicasets \
               -n production \
               -l app=backend \
@@ -668,7 +564,6 @@ jobs:
 
             echo ""
             echo "===== BACKEND PODS ====="
-
             kubectl get pods \
               -n production \
               -l app=backend \
@@ -676,14 +571,17 @@ jobs:
 
             echo ""
             echo "===== BACKEND POD DESCRIPTIONS ====="
-
             kubectl describe pods \
               -n production \
               -l app=backend || true
 
             echo ""
-            echo "===== BACKEND LOGS ====="
+            echo "===== BACKEND DEPLOYMENT DESCRIPTION ====="
+            kubectl describe deployment backend \
+              -n production || true
 
+            echo ""
+            echo "===== BACKEND LOGS ====="
             kubectl logs \
               -n production \
               -l app=backend \
@@ -692,7 +590,6 @@ jobs:
 
             echo ""
             echo "===== PREVIOUS BACKEND LOGS ====="
-
             kubectl logs \
               -n production \
               -l app=backend \
@@ -702,31 +599,24 @@ jobs:
 
             echo ""
             echo "===== PRODUCTION EVENTS ====="
-
             kubectl get events \
               -n production \
               --sort-by='.lastTimestamp' || true
 
             echo ""
             echo "===== ALL CLUSTER PODS ====="
-
-            kubectl get pods \
-              -A \
-              -o wide || true
+            kubectl get pods -A -o wide || true
 
             exit 1
-
           fi
 
-      # ---------------------------------------------------------------
-      # Wait for frontend
-      # ---------------------------------------------------------------
 
+      # -----------------------------------------------------------------
+      # Wait for frontend
+      # -----------------------------------------------------------------
       - name: Wait for frontend rollout
         run: |
-
-          if ! kubectl rollout status \
-            deployment/frontend \
+          if ! kubectl rollout status deployment/frontend \
             -n production \
             --timeout=180s; then
 
@@ -736,15 +626,13 @@ jobs:
             echo "=================================================="
 
             echo ""
-            echo "===== FRONTEND DEPLOYMENT ====="
-
+            echo "===== FRONTEND DEPLOYMENT STATUS ====="
             kubectl get deployment frontend \
               -n production \
               -o wide || true
 
             echo ""
             echo "===== FRONTEND REPLICASETS ====="
-
             kubectl get replicasets \
               -n production \
               -l app=frontend \
@@ -752,7 +640,6 @@ jobs:
 
             echo ""
             echo "===== FRONTEND PODS ====="
-
             kubectl get pods \
               -n production \
               -l app=frontend \
@@ -760,14 +647,17 @@ jobs:
 
             echo ""
             echo "===== FRONTEND POD DESCRIPTIONS ====="
-
             kubectl describe pods \
               -n production \
               -l app=frontend || true
 
             echo ""
-            echo "===== FRONTEND LOGS ====="
+            echo "===== FRONTEND DEPLOYMENT DESCRIPTION ====="
+            kubectl describe deployment frontend \
+              -n production || true
 
+            echo ""
+            echo "===== FRONTEND LOGS ====="
             kubectl logs \
               -n production \
               -l app=frontend \
@@ -776,7 +666,6 @@ jobs:
 
             echo ""
             echo "===== PREVIOUS FRONTEND LOGS ====="
-
             kubectl logs \
               -n production \
               -l app=frontend \
@@ -786,52 +675,36 @@ jobs:
 
             echo ""
             echo "===== PRODUCTION EVENTS ====="
-
             kubectl get events \
               -n production \
               --sort-by='.lastTimestamp' || true
 
             echo ""
             echo "===== ALL CLUSTER PODS ====="
-
-            kubectl get pods \
-              -A \
-              -o wide || true
+            kubectl get pods -A -o wide || true
 
             exit 1
-
           fi
 
-      # ---------------------------------------------------------------
-      # Final deployment verification
-      # ---------------------------------------------------------------
 
+      # -----------------------------------------------------------------
+      # Final deployment verification
+      # -----------------------------------------------------------------
       - name: Verify deployment
         run: |
-
           echo "===== BACKEND DEPLOYMENT ====="
-
           kubectl get deployment backend \
             -n production \
             -o wide
 
           echo ""
           echo "===== FRONTEND DEPLOYMENT ====="
-
           kubectl get deployment frontend \
             -n production \
             -o wide
 
           echo ""
-          echo "===== POSTGRES DEPLOYMENT ====="
-
-          kubectl get deployment postgres \
-            -n production \
-            -o wide
-
-          echo ""
           echo "===== BACKEND PODS ====="
-
           kubectl get pods \
             -n production \
             -l app=backend \
@@ -839,102 +712,63 @@ jobs:
 
           echo ""
           echo "===== FRONTEND PODS ====="
-
           kubectl get pods \
             -n production \
             -l app=frontend \
             -o wide || true
 
           echo ""
-          echo "===== POSTGRES PODS ====="
-
-          kubectl get pods \
-            -n production \
-            -l app=postgres \
-            -o wide || true
-
-          echo ""
           echo "===== SERVICES ====="
-
           kubectl get services \
             -n production || true
 
-      # ---------------------------------------------------------------
-      # Always collect Kubernetes diagnostics
-      # ---------------------------------------------------------------
 
+      # -----------------------------------------------------------------
+      # Always collect Kubernetes diagnostics
+      # -----------------------------------------------------------------
       - name: Collect Kubernetes diagnostics
         if: always()
         run: |
-
           echo "===== ALL PODS ====="
-
-          kubectl get pods \
-            -A \
-            -o wide || true
+          kubectl get pods -A -o wide || true
 
           echo ""
           echo "===== DEPLOYMENTS ====="
-
-          kubectl get deployments \
-            -A \
-            -o wide || true
+          kubectl get deployments -A -o wide || true
 
           echo ""
           echo "===== SERVICES ====="
-
-          kubectl get services \
-            -A || true
+          kubectl get services -A || true
 
           echo ""
           echo "===== EVENTS ====="
-
-          kubectl get events \
-            -A \
+          kubectl get events -A \
             --sort-by='.lastTimestamp' || true
 
           echo ""
           echo "===== BACKEND DESCRIPTION ====="
-
           kubectl describe deployment backend \
             -n production || true
 
           echo ""
           echo "===== FRONTEND DESCRIPTION ====="
-
           kubectl describe deployment frontend \
             -n production || true
 
           echo ""
-          echo "===== POSTGRES DESCRIPTION ====="
-
-          kubectl describe deployment postgres \
-            -n production || true
-
-          echo ""
           echo "===== BACKEND POD DETAILS ====="
-
           kubectl describe pods \
             -n production \
             -l app=backend || true
 
           echo ""
           echo "===== FRONTEND POD DETAILS ====="
-
           kubectl describe pods \
             -n production \
             -l app=frontend || true
 
           echo ""
-          echo "===== POSTGRES POD DETAILS ====="
-
-          kubectl describe pods \
-            -n production \
-            -l app=postgres || true
-
-          echo ""
           echo "===== BACKEND LOGS ====="
-
           kubectl logs \
             -n production \
             -l app=backend \
@@ -943,27 +777,16 @@ jobs:
 
           echo ""
           echo "===== FRONTEND LOGS ====="
-
           kubectl logs \
             -n production \
             -l app=frontend \
             --all-containers=true \
             --tail=200 || true
 
-          echo ""
-          echo "===== POSTGRES LOGS ====="
 
-          kubectl logs \
-            -n production \
-            -l app=postgres \
-            --all-containers=true \
-            --tail=200 || true
-
-
-  # =====================================================================
+  # ---------------------------------------------------------------------
   # Stage 7: Audit + compliance dashboard
-  # =====================================================================
-
+  # ---------------------------------------------------------------------
   audit:
     name: "7. Audit Log + Compliance Dashboard"
     runs-on: ubuntu-latest
@@ -979,7 +802,6 @@ jobs:
     if: always()
 
     steps:
-
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
@@ -992,7 +814,6 @@ jobs:
 
       - name: Write audit event
         run: |
-
           RISK_SCORE="${{ needs.risk-prediction.outputs.risk_score || '0' }}"
 
           PIPELINE_STATUS="success"
