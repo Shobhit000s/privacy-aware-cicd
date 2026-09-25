@@ -1,4 +1,4 @@
-=name: Privacy-Aware CI/CD Pipeline
+name: Privacy-Aware CI/CD Pipeline
 
 on:
   push:
