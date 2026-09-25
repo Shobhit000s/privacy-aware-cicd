@@ -200,7 +200,7 @@ jobs:
             --input /tmp/input.json \
             --data policies/opa/privacy_policy.rego \
             --data policies/opa/deployment_policy.rego \
-            "data.privacy.deny" \
+            "data.privacy.deny[_]" \
             --format pretty \
             --fail-defined
 
