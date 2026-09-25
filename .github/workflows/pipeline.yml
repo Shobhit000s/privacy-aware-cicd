@@ -717,10 +717,14 @@ jobs:
                     mountPath: /var/cache/nginx
                   - name: nginx-tmp
                     mountPath: /tmp
+                  - name: nginx-run
+                    mountPath: /run
                 volumes:
                 - name: nginx-cache
                   emptyDir: {}
                 - name: nginx-tmp
+                  emptyDir: {}
+                - name: nginx-run
                   emptyDir: {}
           '
 
