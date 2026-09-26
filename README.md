@@ -139,3 +139,4 @@ untested — this section is the short version.
 - **A live Kubernetes deploy** — no `kubectl`/`minikube`/`kind`/`k3s` available; `kubeconform` (above) is the strongest validation achievable without one
 
 **105 passed, 3 skipped, 0 failed** across the full `pytest tests/` run at last check.
+
