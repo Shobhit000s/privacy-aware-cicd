@@ -270,6 +270,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify Git diff base
+        run: |
+          git fetch origin main --depth=1
+          git rev-parse origin/main
+          echo "PR diff against origin/main:"
+          git diff --shortstat origin/main HEAD
+          git diff --name-only origin/main HEAD
 
       - uses: actions/setup-python@v5
         with:
