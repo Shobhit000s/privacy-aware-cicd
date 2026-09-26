@@ -1,0 +1,50 @@
+# Controlled ML privacy-risk test
+# No real credentials or personal information.
+
+public: true
+email: TEST_EMAIL_FIELD
+phone: TEST_PHONE_FIELD
+address: TEST_ADDRESS_FIELD
+passport: TEST_PASSPORT_FIELD
+national_id: TEST_ID_FIELD
+encrypted: false
+auth_test: true
+
+public: true
+email: TEST_EMAIL_FIELD
+phone: TEST_PHONE_FIELD
+address: TEST_ADDRESS_FIELD
+encrypted: false
+
+public: true
+email: TEST_EMAIL_FIELD
+phone: TEST_PHONE_FIELD
+address: TEST_ADDRESS_FIELD
+encrypted: false
+
+public: true
+email: TEST_EMAIL_FIELD
+phone: TEST_PHONE_FIELD
+address: TEST_ADDRESS_FIELD
+encrypted: false
+
+public: true
+email: TEST_EMAIL_FIELD
+phone: TEST_PHONE_FIELD
+address: TEST_ADDRESS_FIELD
+encrypted: false
+public: true
+email: TEST_EMAIL_FIELD
+phone: TEST_PHONE_FIELD
+address: TEST_ADDRESS_FIELD
+encrypted: false
+public: true
+email: TEST_EMAIL_FIELD
+phone: TEST_PHONE_FIELD
+address: TEST_ADDRESS_FIELD
+encrypted: false
+public: true
+email: TEST_EMAIL_FIELD
+phone: TEST_PHONE_FIELD
+address: TEST_ADDRESS_FIELD
+encrypted: false
