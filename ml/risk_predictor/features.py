@@ -22,6 +22,7 @@ Feature set (documented rationale in docs/ARCHITECTURE.md):
   - is_friday_or_weekend     : deploys near/after cutover windows carry more risk
   - touches_auth_module      : 1 if diff touches authn/authz code paths
 """
+
 import argparse
 import json
 import os
@@ -29,6 +30,7 @@ import random
 import re
 import subprocess
 from datetime import datetime
+
 
 FEATURE_NAMES = [
     "lines_changed",
@@ -47,46 +49,128 @@ FEATURE_NAMES = [
     "touches_auth_module",
 ]
 
-SECRET_ENV_RE = re.compile(r"(SECRET|TOKEN|PASSWORD|API_KEY|CREDENTIAL|PRIVATE_KEY)", re.IGNORECASE)
-PII_FIELD_RE = re.compile(r"(email|ssn|phone|address|dob|passport|credit_card|national_id)", re.IGNORECASE)
-AUTH_PATH_RE = re.compile(r"(auth|login|session|token|permission|rbac)", re.IGNORECASE)
+
+SECRET_ENV_RE = re.compile(
+    r"(SECRET|TOKEN|PASSWORD|API_KEY|CREDENTIAL|PRIVATE_KEY)",
+    re.IGNORECASE,
+)
+
+PII_FIELD_RE = re.compile(
+    r"(email|ssn|phone|address|dob|passport|credit_card|national_id)",
+    re.IGNORECASE,
+)
+
+AUTH_PATH_RE = re.compile(
+    r"(auth|login|session|token|permission|rbac)",
+    re.IGNORECASE,
+)
 
 
 def run_git_diff(diff_base: str) -> tuple[list[str], str]:
+    """
+    Return changed files and the complete diff between diff_base and HEAD.
+
+    CI must fail if the requested diff base cannot be resolved. Returning an
+    empty diff would incorrectly make a high-risk change look like a
+    low-risk/no-change deployment.
+    """
+
     try:
-        files = subprocess.run(
+        files_result = subprocess.run(
             ["git", "diff", "--name-only", diff_base, "HEAD"],
-            capture_output=True, text=True, check=True,
-        ).stdout.splitlines()
-        stat = subprocess.run(
-            ["git", "diff", "--shortstat", diff_base, "HEAD"],
-            capture_output=True, text=True, check=True,
-        ).stdout
-        full_diff = subprocess.run(
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        full_diff_result = subprocess.run(
             ["git", "diff", diff_base, "HEAD"],
-            capture_output=True, text=True, check=True,
-        ).stdout
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        files = files_result.stdout.splitlines()
+        full_diff = full_diff_result.stdout
+
         return [f for f in files if f.strip()], full_diff
-    except subprocess.CalledProcessError:
-        return [], ""
+
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+
+        raise RuntimeError(
+            f"Unable to compute Git diff against '{diff_base}'. "
+            f"Make sure the diff base exists and is fetched in CI."
+            + (f" Git error: {stderr}" if stderr else "")
+        ) from exc
 
 
 def extract_from_repo(diff_base: str) -> dict:
+    """
+    Extract privacy/security-related features from the Git diff.
+    """
+
     files, full_diff = run_git_diff(diff_base)
 
-    lines_changed = full_diff.count("\n+") + full_diff.count("\n-")
+    lines_changed = (
+        full_diff.count("\n+")
+        + full_diff.count("\n-")
+    )
+
     files_changed = len(files)
-    config_files_touched = sum(1 for f in files if f.startswith(("k8s/", "config/", "docker/")))
-    new_env_vars = len(re.findall(r"^\+\s*.*name:\s*[\"']?[A-Z0-9_]+[\"']?", full_diff, re.MULTILINE))
-    secret_like_env_vars = len(SECRET_ENV_RE.findall(full_diff))
-    new_public_endpoints = full_diff.count("public: true") + full_diff.count('"public": true')
-    pii_field_count = len(set(PII_FIELD_RE.findall(full_diff)))
-    pii_fields_unencrypted = full_diff.count("encrypted: false") + full_diff.count('"encrypted": false')
-    has_audit_logging = 1 if "audit_logging_enabled: true" in full_diff or "audit_logging_enabled\": true" in full_diff else 0
-    touches_auth_module = 1 if any(AUTH_PATH_RE.search(f) for f in files) else 0
+
+    config_files_touched = sum(
+        1
+        for f in files
+        if f.startswith(("k8s/", "config/", "docker/"))
+    )
+
+    new_env_vars = len(
+        re.findall(
+            r"^\+\s*.*name:\s*[\"']?[A-Z0-9_]+[\"']?",
+            full_diff,
+            re.MULTILINE,
+        )
+    )
+
+    secret_like_env_vars = len(
+        SECRET_ENV_RE.findall(full_diff)
+    )
+
+    new_public_endpoints = (
+        full_diff.count("public: true")
+        + full_diff.count('"public": true')
+    )
+
+    pii_field_count = len(
+        set(PII_FIELD_RE.findall(full_diff))
+    )
+
+    pii_fields_unencrypted = (
+        full_diff.count("encrypted: false")
+        + full_diff.count('"encrypted": false')
+    )
+
+    has_audit_logging = (
+        1
+        if (
+            "audit_logging_enabled: true" in full_diff
+            or 'audit_logging_enabled": true' in full_diff
+        )
+        else 0
+    )
+
+    touches_auth_module = (
+        1
+        if any(AUTH_PATH_RE.search(f) for f in files)
+        else 0
+    )
 
     weekday = datetime.now().weekday()
-    is_friday_or_weekend = 1 if weekday >= 4 else 0
+
+    is_friday_or_weekend = (
+        1 if weekday >= 4 else 0
+    )
 
     return {
         "lines_changed": lines_changed,
@@ -98,18 +182,34 @@ def extract_from_repo(diff_base: str) -> dict:
         "pii_field_count": pii_field_count,
         "pii_fields_unencrypted": pii_fields_unencrypted,
         "has_audit_logging": has_audit_logging,
-        # These two would come from a service registry / incident tracker in production;
-        # default to conservative middle-of-road values when unavailable.
-        "service_incident_history": int(os.environ.get("SERVICE_INCIDENT_HISTORY", 1)),
-        "base_image_age_days": int(os.environ.get("BASE_IMAGE_AGE_DAYS", 30)),
-        "reviewer_count": int(os.environ.get("PR_REVIEWER_COUNT", 1)),
+
+        # These values would come from a service registry / incident
+        # tracker in production. Conservative defaults are used when
+        # unavailable.
+        "service_incident_history": int(
+            os.environ.get("SERVICE_INCIDENT_HISTORY", 1)
+        ),
+
+        "base_image_age_days": int(
+            os.environ.get("BASE_IMAGE_AGE_DAYS", 30)
+        ),
+
+        "reviewer_count": int(
+            os.environ.get("PR_REVIEWER_COUNT", 1)
+        ),
+
         "is_friday_or_weekend": is_friday_or_weekend,
         "touches_auth_module": touches_auth_module,
     }
 
 
 def generate_demo_features(seed: int | None = None) -> dict:
+    """
+    Generate a synthetic feature vector for local/demo testing.
+    """
+
     rng = random.Random(seed)
+
     return {
         "lines_changed": rng.randint(5, 800),
         "files_changed": rng.randint(1, 40),
@@ -130,10 +230,32 @@ def generate_demo_features(seed: int | None = None) -> dict:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--diff-base", default="origin/main")
-    ap.add_argument("--out", default="/tmp/features.json")
-    ap.add_argument("--demo", action="store_true")
-    ap.add_argument("--seed", type=int, default=None)
+
+    ap.add_argument(
+        "--diff-base",
+        default="origin/main",
+        help="Git ref to compare against (default: origin/main)",
+    )
+
+    ap.add_argument(
+        "--out",
+        default="/tmp/features.json",
+        help="Output JSON file path",
+    )
+
+    ap.add_argument(
+        "--demo",
+        action="store_true",
+        help="Generate synthetic demo features instead of reading Git diff",
+    )
+
+    ap.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for demo feature generation",
+    )
+
     args = ap.parse_args()
 
     if args.demo:
@@ -141,8 +263,9 @@ def main():
     else:
         features = extract_from_repo(args.diff_base)
 
-    with open(args.out, "w") as f:
+    with open(args.out, "w", encoding="utf-8") as f:
         json.dump(features, f, indent=2)
+
     print(f"Wrote feature vector to {args.out}")
     print(json.dumps(features, indent=2))
 
